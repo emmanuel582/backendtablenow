@@ -20,6 +20,9 @@ import settingsRoutes from './routes/settings';
 const app: Application = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust proxy for express-rate-limit
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 const allowedOrigins = [

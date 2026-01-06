@@ -10,14 +10,34 @@ export class EmailService {
 
   constructor() {
     // Configure nodemailer with SendGrid SMTP
+    const port = Number(process.env.SMTP_PORT) || 465;
+    const isSecure = port === 465;
+
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.sendgrid.net',
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: false, // Use false for TLS (587)
+      port: port,
+      secure: isSecure,
       auth: {
         user: process.env.SMTP_USER || 'apikey',
         pass: process.env.SMTP_PASS,
       },
+      // Increase timeouts and add more robust connection settings
+      connectionTimeout: 10000, // 10 seconds
+      greetingTimeout: 10000,
+      socketTimeout: 20000,
+      tls: {
+        // Do not fail on invalid certs (useful for some proxies/firewalls)
+        rejectUnauthorized: false
+      }
+    });
+
+    // Verify connection on startup
+    this.transporter.verify((error, success) => {
+      if (error) {
+        console.error('❌ SMTP Connection Error:', error);
+      } else {
+        console.log('✅ SMTP Server is ready to take messages');
+      }
     });
   }
 
