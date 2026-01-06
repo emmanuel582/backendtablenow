@@ -81,18 +81,22 @@ export class VapiService {
     }
 
     /**
-     * Update assistant with new restaurant data
+     * Update assistant with new restaurant data and sync server URL
      */
     async updateAssistant(assistantId: string, restaurantData: any): Promise<any> {
         try {
             const systemPrompt = this.generateEnhancedSystemPrompt(restaurantData);
+            const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
+
+            console.log(`🔄 Updating VAPI Assistant ${assistantId} with Server URL: ${serverUrl}`);
 
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/assistant/${assistantId}`,
                 {
                     model: {
                         systemPrompt
-                    }
+                    },
+                    serverUrl // Sync the webhook URL to the current environment
                 },
                 { headers: this.headers }
             );
@@ -104,17 +108,19 @@ export class VapiService {
     }
 
     /**
-     * Link assistant to phone number
+     * Link assistant to phone number and update server URL
      */
     async linkAssistantToPhone(phoneNumberId: string, assistantId: string): Promise<any> {
         try {
             const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
 
+            console.log(`🔗 Linking Assistant ${assistantId} to Phone ${phoneNumberId} with Server URL: ${serverUrl}`);
+
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/phone-number/${phoneNumberId}`,
                 {
                     assistantId,
-                    serverUrl // Explicitly set the Server URL on the phone number
+                    serverUrl // Explicitly set/update the Server URL on the phone number
                 },
                 { headers: this.headers }
             );
