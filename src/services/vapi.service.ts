@@ -88,21 +88,30 @@ export class VapiService {
             const systemPrompt = this.generateEnhancedSystemPrompt(restaurantData);
             const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
 
-            console.log(`🔄 Updating VAPI Assistant ${assistantId} with Server URL: ${serverUrl}`);
+            console.log(`🔄 Updating VAPI Assistant ${assistantId}...`);
+            console.log(`🔗 Target Server URL: ${serverUrl}`);
+
+            // Construct payload with required model fields to satisfy validation
+            const payload = {
+                model: {
+                    provider: 'openai',
+                    model: 'gpt-4-turbo',
+                    systemPrompt
+                },
+                serverUrl // Update the webhook URL
+            };
 
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/assistant/${assistantId}`,
-                {
-                    model: {
-                        systemPrompt
-                    },
-                    serverUrl // Sync the webhook URL to the current environment
-                },
+                payload,
                 { headers: this.headers }
             );
+
+            console.log(`✅ VAPI Assistant ${assistantId} updated successfully`);
             return response.data;
         } catch (error: any) {
-            console.error('Error updating VAPI assistant:', error.response?.data || error.message);
+            const errorData = error.response?.data;
+            console.error('❌ Error updating VAPI assistant:', JSON.stringify(errorData || error.message, null, 2));
             throw error;
         }
     }
@@ -114,7 +123,8 @@ export class VapiService {
         try {
             const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
 
-            console.log(`🔗 Linking Assistant ${assistantId} to Phone ${phoneNumberId} with Server URL: ${serverUrl}`);
+            console.log(`🔗 Linking Assistant ${assistantId} to Phone ${phoneNumberId}...`);
+            console.log(`🌍 Webhook URL: ${serverUrl}`);
 
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/phone-number/${phoneNumberId}`,
@@ -126,7 +136,8 @@ export class VapiService {
             );
             return response.data;
         } catch (error: any) {
-            console.error('Error linking assistant to phone:', error.response?.data || error.message);
+            const errorData = error.response?.data;
+            console.error('❌ Error linking assistant to phone:', JSON.stringify(errorData || error.message, null, 2));
             throw error;
         }
     }
