@@ -33,6 +33,7 @@ router.use(authenticateToken);
 router.get('/auth-url', (req: AuthRequest, res: Response) => {
     try {
         const authUrl = calendarService.getAuthUrl();
+        console.log('Generated Google Auth URL:', authUrl);
         res.json({ authUrl });
     } catch (error: any) {
         console.error('Get auth URL error:', error);
