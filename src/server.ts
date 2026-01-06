@@ -26,7 +26,8 @@ const allowedOrigins = [
     process.env.FRONTEND_URL,
     'http://localhost:5173',
     'http://localhost:5174',
-    'https://your-frontend-url.com'  // Add your production frontend URL here
+    'https://tablenowfrontend.vercel.app',
+    'https://www.tablenowfrontend.vercel.app'
 ].filter(Boolean); // Remove any undefined values
 
 app.use(cors({

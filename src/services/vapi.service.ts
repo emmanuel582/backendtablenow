@@ -16,9 +16,7 @@ export class VapiService {
      */
     async createPhoneNumber(restaurantId: string, restaurantName: string): Promise<any> {
         try {
-            console.log('📱 Checking for available phone numbers in Vapi pool...');
-
-            // 1. List all phone numbers from Vapi
+            // List all phone numbers from Vapi
             const response = await axios.get(
                 `${VAPI_BASE_URL}/phone-number`,
                 { headers: this.headers }
@@ -30,11 +28,9 @@ export class VapiService {
             const availableNumber = response.data.find((p: any) => !p.assistantId);
 
             if (availableNumber) {
-                console.log(`✅ Found available number in pool: ${availableNumber.number}`);
                 return availableNumber;
             }
 
-            console.warn('⚠️ No available numbers in pool.');
             throw new Error('No available phone numbers in the Vapi pool. Please import more numbers via the Vapi Dashboard.');
 
         } catch (error: any) {
@@ -113,7 +109,6 @@ export class VapiService {
     async linkAssistantToPhone(phoneNumberId: string, assistantId: string): Promise<any> {
         try {
             const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
-            console.log(`🔗 Linking Assistant ${assistantId} to Phone ${phoneNumberId} with Server URL: ${serverUrl}`);
 
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/phone-number/${phoneNumberId}`,

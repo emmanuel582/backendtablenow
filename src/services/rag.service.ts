@@ -25,9 +25,9 @@ export class RAGService {
     private async initializeIndex() {
         try {
             this.index = pinecone.Index(this.indexName);
-            console.log('✅ Pinecone index initialized:', this.indexName);
         } catch (error) {
-            console.error('❌ Error initializing Pinecone:', error);
+            console.error('Error initializing Pinecone:', error);
+            throw error;
         }
     }
 
@@ -94,18 +94,15 @@ export class RAGService {
         fileType: string
     ): Promise<void> {
         try {
-            console.log(`📄 Processing ${documentType} for restaurant ${restaurantId}...`);
-
             // Extract text from document
             const text = await this.extractTextFromDocument(filePath, fileType);
-            console.log(`✅ Extracted ${text.length} characters from document`);
 
             // Split into chunks
             const chunks = this.splitTextIntoChunks(text);
-            console.log(`✅ Split into ${chunks.length} chunks`);
 
             // Generate embeddings and store in Pinecone
             const vectors = [];
+
             for (let i = 0; i < chunks.length; i++) {
                 const chunk = chunks[i];
                 const embedding = await this.generateEmbedding(chunk);
@@ -116,24 +113,19 @@ export class RAGService {
                     metadata: {
                         restaurantId,
                         documentType,
-                        text: chunk,
                         chunkIndex: i,
-                        totalChunks: chunks.length,
-                        timestamp: new Date().toISOString()
+                        text: chunk
                     }
                 });
 
                 // Batch upsert every 100 vectors
                 if (vectors.length >= 100 || i === chunks.length - 1) {
                     await this.index.upsert(vectors);
-                    console.log(`✅ Stored ${vectors.length} vectors in Pinecone`);
                     vectors.length = 0; // Clear array
                 }
             }
-
-            console.log(`✅ Successfully processed and stored ${documentType} for restaurant ${restaurantId}`);
         } catch (error: any) {
-            console.error(`❌ Error processing document:`, error);
+            console.error('Error processing document:', error);
             throw error;
         }
     }

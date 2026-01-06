@@ -11,7 +11,7 @@ class TwilioService {
 
     constructor() {
         if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-            console.warn('⚠️  Twilio credentials not configured');
+            console.warn('Twilio credentials not configured');
         }
         // Use Basic Auth with Account SID and Auth Token
         this.auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
@@ -66,7 +66,6 @@ class TwilioService {
                 }
             );
 
-            console.log('✅ Twilio phone number purchased:', response.data.phone_number);
             return response.data;
         } catch (error: any) {
             console.error('Error purchasing Twilio number:', error.response?.data || error.message);
@@ -119,7 +118,6 @@ class TwilioService {
                 }
             );
 
-            console.log('✅ Phone number imported to VAPI:', response.data);
             return response.data;
         } catch (error: any) {
             console.error('Error importing to VAPI:', error.response?.data || error.message);
@@ -132,10 +130,7 @@ class TwilioService {
      */
     async buyAndImportPhoneNumber(vapiApiKey: string, areaCode?: string): Promise<any> {
         try {
-            console.log('🔍 Searching for available phone numbers...');
             const phoneNumber = await this.buyPhoneNumber(areaCode);
-
-            console.log('📱 Importing to VAPI...');
             const vapiPhone = await this.importToVapi(phoneNumber, vapiApiKey);
 
             return {
