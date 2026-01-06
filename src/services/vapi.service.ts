@@ -188,7 +188,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
             {
                 type: 'function',
                 async: false,
-                messages: [{ type: 'request-start', content: 'Checking availability for you...' }],
                 function: {
                     name: 'check_availability',
                     description: 'Check if tables are available for a specific date, time, and party size',
@@ -209,7 +208,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
             {
                 type: 'function',
                 async: false,
-                messages: [{ type: 'request-start', content: 'Confirming your reservation...' }],
                 function: {
                     name: 'create_booking',
                     description: 'Create a new reservation',
@@ -234,7 +232,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
             {
                 type: 'function',
                 async: false,
-                messages: [{ type: 'request-start', content: 'Updating your details...' }],
                 function: {
                     name: 'update_booking',
                     description: 'Update an existing reservation',
@@ -256,7 +253,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
             {
                 type: 'function',
                 async: false,
-                messages: [{ type: 'request-start', content: 'Cancelling your booking...' }],
                 function: {
                     name: 'cancel_booking',
                     description: 'Cancel a reservation',
@@ -275,7 +271,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
             {
                 type: 'function',
                 async: false,
-                messages: [{ type: 'request-start', content: 'One moment, checking our info...' }],
                 function: {
                     name: 'answer_question',
                     description: 'Answer questions using restaurant docs.',
