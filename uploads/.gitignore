@@ -1,0 +1,10 @@
+# Uploads directory for restaurant documents
+# This directory stores uploaded menus, FAQs, and policy documents
+*.pdf
+*.doc
+*.docx
+*.txt
+*.jpg
+*.jpeg
+*.png
+!.gitkeep
