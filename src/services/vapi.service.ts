@@ -81,9 +81,11 @@ export class VapiService {
         try {
             const systemPrompt = this.generateEnhancedSystemPrompt(restaurantData);
             const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
+            const tools = this.generateTools();
 
             console.log(`🔄 Updating VAPI Assistant ${assistantId}...`);
             console.log(`🔗 Target Server URL: ${serverUrl}`);
+            console.log(`🛠️  Tools to sync: ${tools.length} functions`);
 
             const payload = {
                 model: {
@@ -93,8 +95,10 @@ export class VapiService {
                     temperature: 0.1
                 },
                 serverUrl,
-                tools: this.generateTools() // Force sync newest tool definitions
+                tools // Force sync newest tool definitions
             };
+
+            console.log('📤 Sending payload to Vapi:', JSON.stringify(payload, null, 2));
 
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/assistant/${assistantId}`,
@@ -103,10 +107,15 @@ export class VapiService {
             );
 
             console.log(`✅ VAPI Assistant ${assistantId} updated successfully`);
+            console.log('📥 Vapi Response:', JSON.stringify(response.data, null, 2));
             return response.data;
         } catch (error: any) {
             const errorData = error.response?.data;
-            console.error('❌ Error updating VAPI assistant:', JSON.stringify(errorData || error.message, null, 2));
+            const errorStatus = error.response?.status;
+            console.error('❌ Error updating VAPI assistant');
+            console.error('Status Code:', errorStatus);
+            console.error('Error Details:', JSON.stringify(errorData || error.message, null, 2));
+            console.error('Full Error:', error);
             throw error;
         }
     }
@@ -173,11 +182,13 @@ Note: If a tool returns an error, apologize and say you're having technical trou
      * Generate modern VAPI Tool definitions
      */
     private generateTools(): any[] {
+        const serverUrl = `${process.env.BACKEND_URL || 'http://localhost:5000'}/api/vapi/webhook`;
+
         return [
             {
                 type: 'function',
                 async: false,
-                messages: [{ role: 'request-start', content: 'Checking availability for you...' }],
+                messages: [{ type: 'request-start', content: 'Checking availability for you...' }],
                 function: {
                     name: 'check_availability',
                     description: 'Check if tables are available for a specific date, time, and party size',
@@ -190,12 +201,15 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['date', 'time', 'partySize']
                     }
+                },
+                server: {
+                    url: serverUrl
                 }
             },
             {
                 type: 'function',
                 async: false,
-                messages: [{ role: 'request-start', content: 'Confirming your reservation...' }],
+                messages: [{ type: 'request-start', content: 'Confirming your reservation...' }],
                 function: {
                     name: 'create_booking',
                     description: 'Create a new reservation',
@@ -212,57 +226,69 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['guestName', 'guestPhone', 'date', 'time', 'partySize']
                     }
+                },
+                server: {
+                    url: serverUrl
                 }
             },
             {
                 type: 'function',
                 async: false,
-                messages: [{ role: 'request-start', content: 'Updating your details...' }],
+                messages: [{ type: 'request-start', content: 'Updating your details...' }],
                 function: {
                     name: 'update_booking',
                     description: 'Update an existing reservation',
                     parameters: {
                         type: 'object',
                         properties: {
-                            confirmationNumber: { type: 'string' },
-                            date: { type: 'string' },
-                            time: { type: 'string' },
-                            partySize: { type: 'number' }
+                            confirmationNumber: { type: 'string', description: 'Booking confirmation number' },
+                            date: { type: 'string', description: 'New date in YYYY-MM-DD format' },
+                            time: { type: 'string', description: 'New time in HH:MM format' },
+                            partySize: { type: 'number', description: 'New party size' }
                         },
                         required: ['confirmationNumber']
                     }
+                },
+                server: {
+                    url: serverUrl
                 }
             },
             {
                 type: 'function',
                 async: false,
-                messages: [{ role: 'request-start', content: 'Cancelling your booking...' }],
+                messages: [{ type: 'request-start', content: 'Cancelling your booking...' }],
                 function: {
                     name: 'cancel_booking',
                     description: 'Cancel a reservation',
                     parameters: {
                         type: 'object',
                         properties: {
-                            confirmationNumber: { type: 'string' }
+                            confirmationNumber: { type: 'string', description: 'Booking confirmation number' }
                         },
                         required: ['confirmationNumber']
                     }
+                },
+                server: {
+                    url: serverUrl
                 }
             },
             {
                 type: 'function',
                 async: false,
-                messages: [{ role: 'request-start', content: 'One moment, checking our info...' }],
+                messages: [{ type: 'request-start', content: 'One moment, checking our info...' }],
                 function: {
                     name: 'answer_question',
                     description: 'Answer questions using restaurant docs.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            question: { type: 'string' }
+                            question: { type: 'string', description: 'Customer question' }
                         },
                         required: ['question']
                     }
+                },
+                server: {
+                    url: serverUrl
                 }
             }
         ];
