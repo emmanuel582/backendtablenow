@@ -5,9 +5,14 @@
     "main": "dist/server.js",
     "scripts": {
         "dev": "nodemon src/server.ts",
-        "build": "tsc",
+        "clean": "rimraf dist",
+        "copy-files": "copyfiles -u 1 src/**/*.json src/**/*.ejs src/**/*.pem dist/",
+        "build": "npm run clean && tsc && npm run copy-files",
         "start": "node dist/server.js",
-        "setup-db": "ts-node src/scripts/setupDatabase.ts"
+        "setup-db": "ts-node src/scripts/setupDatabase.ts",
+        "heroku-prebuild": "npm install",
+        "heroku-postbuild": "npm run build",
+        "render-build": "npm install && npm run build"
     },
     "keywords": [
         "restaurant",
