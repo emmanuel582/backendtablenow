@@ -92,10 +92,10 @@ export class VapiService {
                     provider: 'openai',
                     model: 'gpt-4-turbo',
                     systemPrompt,
-                    temperature: 0.1
+                    temperature: 0.1,
+                    tools: this.generateTools() // Tools MUST be inside the model object
                 },
-                serverUrl,
-                tools // Force sync newest tool definitions
+                serverUrl
             };
 
             console.log('📤 Sending payload to Vapi:', JSON.stringify(payload, null, 2));
@@ -187,7 +187,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
         return [
             {
                 type: 'function',
-                async: false,
                 function: {
                     name: 'check_availability',
                     description: 'Check if tables are available for a specific date, time, and party size',
@@ -200,14 +199,10 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['date', 'time', 'partySize']
                     }
-                },
-                server: {
-                    url: serverUrl
                 }
             },
             {
                 type: 'function',
-                async: false,
                 function: {
                     name: 'create_booking',
                     description: 'Create a new reservation',
@@ -224,14 +219,10 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['guestName', 'guestPhone', 'date', 'time', 'partySize']
                     }
-                },
-                server: {
-                    url: serverUrl
                 }
             },
             {
                 type: 'function',
-                async: false,
                 function: {
                     name: 'update_booking',
                     description: 'Update an existing reservation',
@@ -245,14 +236,10 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['confirmationNumber']
                     }
-                },
-                server: {
-                    url: serverUrl
                 }
             },
             {
                 type: 'function',
-                async: false,
                 function: {
                     name: 'cancel_booking',
                     description: 'Cancel a reservation',
@@ -263,14 +250,10 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['confirmationNumber']
                     }
-                },
-                server: {
-                    url: serverUrl
                 }
             },
             {
                 type: 'function',
-                async: false,
                 function: {
                     name: 'answer_question',
                     description: 'Answer questions using restaurant docs.',
@@ -281,9 +264,6 @@ Note: If a tool returns an error, apologize and say you're having technical trou
                         },
                         required: ['question']
                     }
-                },
-                server: {
-                    url: serverUrl
                 }
             }
         ];
