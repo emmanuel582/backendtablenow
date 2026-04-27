@@ -10,6 +10,7 @@ import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 
 import logger from './lib/logger';
+import { config } from './lib/config';
 import { correlationId, errorHandler } from './middleware/handlers';
 
 import authRoutes       from './routes/auth';
@@ -32,7 +33,7 @@ app.set('trust proxy', 1);
 app.use(helmet());
 
 const allowedOrigins = [
-    process.env.FRONTEND_URL,
+    config.frontendUrl,
     'http://localhost:5173',
     'http://localhost:5174',
     'https://app.tablenow.io',

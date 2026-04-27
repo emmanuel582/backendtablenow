@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import calendarService from '../services/calendar.service';
+import { config } from '../lib/config';
 
 const router = Router();
 
@@ -12,7 +13,7 @@ const router = Router();
  */
 router.get('/callback', (req: any, res: Response) => {
     const { code, error, state } = req.query;
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const frontendUrl = config.frontendUrl;
 
     if (error) {
         return res.redirect(`${frontendUrl}/settings?error=${error}`);
