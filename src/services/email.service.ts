@@ -1,50 +1,65 @@
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
-import dotenv from 'dotenv';
-import path from 'path';
+import { config } from '../lib/config';
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-
+/**
+ * Service d'envoi d'emails (transactionnels + parsing entrant).
+ *
+ * Toute la configuration SMTP et l'adresse expéditrice sont lues depuis
+ * src/lib/config.ts (validé au boot). Aucun fallback hardcodé : si la config
+ * est invalide, le serveur refuse de démarrer avant même d'instancier ce
+ * service.
+ */
 export class EmailService {
-  private fromEmail = process.env.EMAIL_FROM || 'bukkyglory2020@gmail.com';
-  private transporter: nodemailer.Transporter;
+    private readonly fromAddress = `TableNow <${config.email.from}>`;
+    private readonly fromAlertAddress = `TableNow Alert <${config.email.from}>`;
+    private readonly transporter: nodemailer.Transporter;
 
-  constructor() {
-    // Configure NodeMailer with SMTP settings
-    this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.SMTP_PORT || '465'),
-      secure: process.env.SMTP_PORT === '465', // true for 465, false for other ports
-      auth: {
-        user: process.env.SMTP_USER || 'bukkyglory2020@gmail.com',
-        pass: process.env.SMTP_PASS || 'yimy lawo fnxj bqei',
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
+    constructor() {
+        // Connexion SMTP — secure=true uniquement sur le port 465 (TLS implicite).
+        // Sur 587, on laisse nodemailer faire un STARTTLS opportuniste.
+        this.transporter = nodemailer.createTransport({
+            host: config.smtp.host,
+            port: config.smtp.port,
+            secure: config.smtp.port === 465,
+            auth: {
+                user: config.smtp.user,
+                pass: config.smtp.pass,
+            },
+            tls: {
+                // Certaines passerelles SMTP (Resend, SendGrid) présentent des
+                // certs qui ne valident pas en mode strict — on désactive la
+                // vérification pour garder la compatibilité historique.
+                rejectUnauthorized: false,
+            },
+        });
 
-    // Verify connection configuration
-    this.transporter.verify((error, success) => {
-      if (error) {
-        console.error('❌ SMTP connection error:', error);
-      } else {
-        console.log('✅ SMTP transporter initialized');
-      }
-    });
-  }
+        // Vérification non bloquante : on log le résultat mais on n'empêche pas
+        // le démarrage si le SMTP est temporairement inaccessible.
+        this.transporter.verify((error) => {
+            if (error) {
+                console.error('❌ SMTP connection error:', error);
+            } else {
+                console.log('✅ SMTP transporter initialized');
+            }
+        });
+    }
 
-  /**
-   * Send verification email
-   */
-  async sendVerificationEmail(to: string, verificationToken: string, restaurantName: string): Promise<void> {
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    /**
+     * Email de vérification d'inscription envoyé au restaurateur.
+     */
+    async sendVerificationEmail(
+        to: string,
+        verificationToken: string,
+        restaurantName: string,
+    ): Promise<void> {
+        const verificationUrl = `${config.frontendUrl}/verify-email?token=${verificationToken}`;
 
-    const mailOptions = {
-      from: `TableNow <${this.fromEmail}>`,
-      to,
-      subject: 'Verify your TableNow account',
-      html: `
+        const mailOptions = {
+            from: this.fromAddress,
+            to,
+            subject: 'Verify your TableNow account',
+            html: `
         <!DOCTYPE html>
         <html>
         <head>
@@ -78,35 +93,35 @@ export class EmailService {
           </div>
         </body>
         </html>
-      `
-    };
+      `,
+        };
 
-    try {
-      await this.transporter.sendMail(mailOptions);
-      console.log(`Verification email sent to ${to} via SMTP`);
-    } catch (error: any) {
-      console.error('Error sending verification email:', error.message);
-      throw error;
+        try {
+            await this.transporter.sendMail(mailOptions);
+            console.log(`Verification email sent to ${to} via SMTP`);
+        } catch (error: any) {
+            console.error('Error sending verification email:', error.message);
+            throw error;
+        }
     }
-  }
 
-  /**
-   * Send booking confirmation email
-   */
-  async sendBookingConfirmation(data: {
-    to: string;
-    restaurantName: string;
-    guestName: string;
-    date: string;
-    time: string;
-    partySize: number;
-    confirmationNumber: string;
-  }): Promise<void> {
-    const mailOptions = {
-      from: `TableNow <${this.fromEmail}>`,
-      to: data.to,
-      subject: `Booking Confirmation - ${data.restaurantName}`,
-      html: `
+    /**
+     * Confirmation de réservation envoyée au client final.
+     */
+    async sendBookingConfirmation(data: {
+        to: string;
+        restaurantName: string;
+        guestName: string;
+        date: string;
+        time: string;
+        partySize: number;
+        confirmationNumber: string;
+    }): Promise<void> {
+        const mailOptions = {
+            from: this.fromAddress,
+            to: data.to,
+            subject: `Booking Confirmation - ${data.restaurantName}`,
+            html: `
         <!DOCTYPE html>
         <html>
         <head>
@@ -129,7 +144,7 @@ export class EmailService {
             <div class="content">
               <h2>Dear ${data.guestName},</h2>
               <p>Your reservation at ${data.restaurantName} has been confirmed!</p>
-              
+
               <div class="booking-details">
                 <div class="detail-row">
                   <span class="label">Confirmation #:</span>
@@ -152,7 +167,7 @@ export class EmailService {
                   <span>${data.partySize} guests</span>
                 </div>
               </div>
-              
+
               <p>We look forward to serving you!</p>
               <p><small>If you need to modify or cancel your reservation, please contact the restaurant directly.</small></p>
             </div>
@@ -162,29 +177,29 @@ export class EmailService {
           </div>
         </body>
         </html>
-      `
-    };
+      `,
+        };
 
-    try {
-      await this.transporter.sendMail(mailOptions);
-      console.log(`Booking confirmation sent to ${data.to} via SMTP`);
-    } catch (error: any) {
-      console.error('Error sending booking confirmation:', error.message);
-      throw error;
+        try {
+            await this.transporter.sendMail(mailOptions);
+            console.log(`Booking confirmation sent to ${data.to} via SMTP`);
+        } catch (error: any) {
+            console.error('Error sending booking confirmation:', error.message);
+            throw error;
+        }
     }
-  }
 
-  /**
-   * Send notification to restaurant
-   */
-  async sendRestaurantNotification(data: {
-    to: string;
-    subject: string;
-    message: string;
-    bookingDetails?: any;
-  }): Promise<void> {
-    const b = data.bookingDetails || {};
-    const bookingSummary = b && Object.keys(b).length > 0 ? `
+    /**
+     * Notification interne envoyée à l'équipe restaurant (alertes diverses).
+     */
+    async sendRestaurantNotification(data: {
+        to: string;
+        subject: string;
+        message: string;
+        bookingDetails?: any;
+    }): Promise<void> {
+        const b = data.bookingDetails || {};
+        const bookingSummary = b && Object.keys(b).length > 0 ? `
       <h4>Booking Details</h4>
       <ul style="padding-left:16px; line-height:1.6;">
         ${b.guest_name ? `<li><strong>Guest:</strong> ${b.guest_name}</li>` : ''}
@@ -199,11 +214,11 @@ export class EmailService {
       </ul>
     ` : '';
 
-    const mailOptions = {
-      from: `TableNow Alert <${this.fromEmail}>`,
-      to: data.to,
-      subject: `TableNow Alert: ${data.subject}`,
-      html: `
+        const mailOptions = {
+            from: this.fromAlertAddress,
+            to: data.to,
+            subject: `TableNow Alert: ${data.subject}`,
+            html: `
         <!DOCTYPE html>
         <html>
         <head>
@@ -235,89 +250,92 @@ export class EmailService {
           </div>
         </body>
         </html>
-      `
-    };
+      `,
+        };
 
-    try {
-      await this.transporter.sendMail(mailOptions);
-      console.log(`Restaurant notification sent to ${data.to} via SMTP`);
-    } catch (error: any) {
-      console.error('Error sending restaurant notification:', error.message);
-      throw error;
+        try {
+            await this.transporter.sendMail(mailOptions);
+            console.log(`Restaurant notification sent to ${data.to} via SMTP`);
+        } catch (error: any) {
+            console.error('Error sending restaurant notification:', error.message);
+            throw error;
+        }
     }
-  }
 
-  /**
-   * Parse BCC email from Zenchef/SevenRooms
-   */
-  async parseBCCEmail(rawEmail: string): Promise<{
-    type: 'new' | 'modification' | 'cancellation';
-    guestName?: string;
-    email?: string;
-    phone?: string;
-    date?: string;
-    time?: string;
-    partySize?: number;
-    confirmationNumber?: string;
-    source: 'zenchef' | 'sevenrooms' | 'unknown';
-  }> {
-    try {
-      const parsed = await simpleParser(rawEmail);
+    /**
+     * Parse un email entrant (BCC reçu depuis Zenchef ou SevenRooms) et
+     * extrait les détails de la réservation par regex sur le corps texte.
+     */
+    async parseBCCEmail(rawEmail: string): Promise<{
+        type: 'new' | 'modification' | 'cancellation';
+        guestName?: string;
+        email?: string;
+        phone?: string;
+        date?: string;
+        time?: string;
+        partySize?: number;
+        confirmationNumber?: string;
+        source: 'zenchef' | 'sevenrooms' | 'unknown';
+    }> {
+        try {
+            const parsed = await simpleParser(rawEmail);
 
-      const subject = parsed.subject || '';
-      const text = parsed.text || '';
-      const html = parsed.html || '';
+            const subject = parsed.subject || '';
+            const text = parsed.text || '';
 
-      // Determine email type
-      let type: 'new' | 'modification' | 'cancellation' = 'new';
-      if (subject.toLowerCase().includes('cancel') || text.toLowerCase().includes('cancelled')) {
-        type = 'cancellation';
-      } else if (subject.toLowerCase().includes('modif') || subject.toLowerCase().includes('update')) {
-        type = 'modification';
-      }
+            // Type d'événement déduit du sujet / corps
+            let type: 'new' | 'modification' | 'cancellation' = 'new';
+            if (subject.toLowerCase().includes('cancel') || text.toLowerCase().includes('cancelled')) {
+                type = 'cancellation';
+            } else if (subject.toLowerCase().includes('modif') || subject.toLowerCase().includes('update')) {
+                type = 'modification';
+            }
 
-      // Determine source
-      let source: 'zenchef' | 'sevenrooms' | 'unknown' = 'unknown';
-      if (parsed.from?.text.toLowerCase().includes('zenchef')) {
-        source = 'zenchef';
-      } else if (parsed.from?.text.toLowerCase().includes('sevenrooms')) {
-        source = 'sevenrooms';
-      }
+            // Source déduite de l'expéditeur
+            let source: 'zenchef' | 'sevenrooms' | 'unknown' = 'unknown';
+            if (parsed.from?.text.toLowerCase().includes('zenchef')) {
+                source = 'zenchef';
+            } else if (parsed.from?.text.toLowerCase().includes('sevenrooms')) {
+                source = 'sevenrooms';
+            }
 
-      // Extract booking details using regex patterns
-      const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
-      const phoneRegex = /(\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/;
-      const dateRegex = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
-      const timeRegex = /(\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)?)/;
-      const partySizeRegex = /(\d+)\s*(?:guest|person|people|pax)/i;
+            // Extraction des détails de réservation par regex sur le corps texte
+            const emailRegex     = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
+            const phoneRegex     = /(\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/;
+            const dateRegex      = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
+            const timeRegex      = /(\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)?)/;
+            const partySizeRegex = /(\d+)\s*(?:guest|person|people|pax)/i;
 
-      return {
-        type,
-        source,
-        email: text.match(emailRegex)?.[1],
-        phone: text.match(phoneRegex)?.[1],
-        date: text.match(dateRegex)?.[1],
-        time: text.match(timeRegex)?.[1],
-        partySize: parseInt(text.match(partySizeRegex)?.[1] || '0'),
-        guestName: parsed.from?.text.split('<')[0].trim()
-      };
-    } catch (error: any) {
-      console.error('Error parsing BCC email:', error.message);
-      throw error;
+            return {
+                type,
+                source,
+                email:     text.match(emailRegex)?.[1],
+                phone:     text.match(phoneRegex)?.[1],
+                date:      text.match(dateRegex)?.[1],
+                time:      text.match(timeRegex)?.[1],
+                partySize: parseInt(text.match(partySizeRegex)?.[1] || '0'),
+                guestName: parsed.from?.text.split('<')[0].trim(),
+            };
+        } catch (error: any) {
+            console.error('Error parsing BCC email:', error.message);
+            throw error;
+        }
     }
-  }
 
-  async sendRawEmail(options: {
-    to: string | string[];
-    subject: string;
-    html?: string;
-    text?: string;
-  }): Promise<void> {
-    await this.transporter.sendMail({
-      from: `TableNow <${this.fromEmail}>`,
-      ...options
-    });
-  }
+    /**
+     * Envoi brut sans template (utilisé pour les BCC vers le PMS du restaurant).
+     */
+    async sendRawEmail(options: {
+        to: string | string[];
+        subject: string;
+        html?: string;
+        text?: string;
+    }): Promise<void> {
+        await this.transporter.sendMail({
+            from: this.fromAddress,
+            ...options,
+        });
+    }
 }
 
 export default new EmailService();

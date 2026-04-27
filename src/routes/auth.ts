@@ -8,6 +8,7 @@ import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 import ragService from '../services/rag.service';
+import { config } from '../lib/config';
 
 const router = Router();
 
@@ -153,7 +154,7 @@ router.post('/register', upload.fields([
                     const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name);
                     await supabase.from('restaurants').update({ vapi_phone_id: phoneNumber.id, vapi_phone_number: phoneNumber.number || phoneNumber.id }).eq('id', restaurant.id);
                     await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-                    const bccEmail = `bcc+r-${restaurant.id}@${process.env.EMAIL_DOMAIN || 'gmail.com'}`;
+                    const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
                     await supabase.from('restaurants').update({ bcc_email: bccEmail, status: 'active' }).eq('id', restaurant.id);
                     console.log('✅ Auto-Provisioned VAPI successfully on fallback bypass!');
                 } catch (vapiErr) {
@@ -295,8 +296,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             console.log('✅ Assistant linked to phone number');
 
             // Generate BCC email with aliasing
-            const emailDomain = process.env.EMAIL_DOMAIN || 'gmail.com';
-            const bccEmail = `bcc+r-${restaurant.id}@${emailDomain}`;
+            const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
 
             // Final update for status and BCC
             await supabase

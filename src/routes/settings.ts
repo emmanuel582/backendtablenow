@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import vapiService from '../services/vapi.service';
+import { config } from '../lib/config';
 
 const router = Router();
 router.use(authenticateToken);
@@ -163,8 +164,7 @@ router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
             console.log('✅ Assistant linked to phone number');
 
             // Generate BCC email
-            const emailDomain = process.env.EMAIL_DOMAIN || 'gmail.com';
-            const bccEmail = `bcc+r-${restaurant.id}@${emailDomain}`;
+            const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
 
             // Final update
             await supabase
