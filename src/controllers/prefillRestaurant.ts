@@ -7,6 +7,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
+import type { Element } from 'domhandler';
 
 interface PrefillResult {
     name?: string;
@@ -197,7 +198,7 @@ async function scrapeWebsite(url: string): Promise<Partial<PrefillResult>> {
     let ldName: string | undefined, ldAddress: string | undefined;
     let ldPhone: string | undefined, ldHours: WeeklyHours | undefined, ldCuisine: string | undefined;
 
-    $('script[type="application/ld+json"]').each((_, el) => {
+    $('script[type="application/ld+json"]').each((_: number, el: Element) => {
         try {
             const data = JSON.parse($(el).html() || '{}');
             const entry = Array.isArray(data) ? data[0] : data;
