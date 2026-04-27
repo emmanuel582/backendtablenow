@@ -259,6 +259,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         const callerPhone = message?.call?.customer?.number;
         let restaurantId: string, date: string, time: string, covers: number;
         let firstName: string, lastName: string, guestPhone: string, guestEmail: string;
+        let language: 'fr' | 'en';
 
         if (toolCall) {
             const rawArgs = toolCall.function?.arguments || toolCall.parameters || '{}';
@@ -271,6 +272,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             lastName = params.last_name || '';
             guestPhone = params.phone || params.guestPhone || callerPhone || '';
             guestEmail = params.email || params.guestEmail || '';
+            language = params.language === 'en' ? 'en' : 'fr';
         } else {
             restaurantId = req.body.restaurant_id;
             date = req.body.date;
@@ -280,6 +282,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             lastName = req.body.last_name || '';
             guestPhone = req.body.phone || '';
             guestEmail = req.body.email || '';
+            language = req.body.language === 'en' ? 'en' : 'fr';
         }
 
         if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
@@ -346,7 +349,8 @@ router.post('/create-booking', async (req: Request, res: Response) => {
                 covers,
                 source: 'phone',
                 status: 'confirmed',
-                call_id: null
+                call_id: null,
+                guest_language: language
             })
             .select()
             .single();
@@ -379,23 +383,28 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             });
         }
 
-        // Non-blocking: Confirmation email
+        // Non-blocking: Confirmation email (in caller's language)
         if (guestEmail) {
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
                         to: guestEmail, restaurantName: restaurant.name, guestName,
-                        date, time: normalizedTime, partySize: covers, confirmationNumber: booking.id
+                        date, time: normalizedTime, partySize: covers, confirmationNumber: booking.id,
+                        language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
                 } catch (err: any) { console.error('[create-booking] Email:', err.message); }
             });
         }
 
+        const successMessage = language === 'en'
+            ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
+            : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
+
         const payload = {
             success: true,
             booking_id: booking.id,
-            message: `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`
+            message: successMessage
         };
         return toolCall
             ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
@@ -817,6 +826,7 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
     const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests } = params;
     const covers = parseInt(partySize, 10);
     const normalizedTime = normalizeTime(time);
+    const language: 'fr' | 'en' = params.language === 'en' ? 'en' : 'fr';
 
     try {
         const phoneKey = callerPhone || guestPhone;
@@ -851,14 +861,18 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
                 special_requests: specialRequests || null,
                 source: 'vapi',
                 status: 'confirmed',
-                call_id: null
+                call_id: null,
+                guest_language: language
             })
             .select()
             .single();
 
         if (insertError || !booking) {
             console.error('[create_booking] Insert error:', insertError);
-            return { success: false, message: 'Impossible de créer la réservation.' };
+            return {
+                success: false,
+                message: language === 'en' ? 'Could not create the booking.' : 'Impossible de créer la réservation.'
+            };
         }
 
         console.log(`✅ Booking created: ${booking.id} — customer: ${customerId}`);
@@ -881,27 +895,35 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
             });
         }
 
-        // Non-blocking: Email
+        // Non-blocking: Email (in caller's language)
         if (guestEmail) {
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
                         to: guestEmail, restaurantName: restaurant.name, guestName,
-                        date, time: normalizedTime || time, partySize: covers, confirmationNumber: booking.id
+                        date, time: normalizedTime || time, partySize: covers, confirmationNumber: booking.id,
+                        language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
                 } catch (err: any) { console.error('[create_booking] Email:', err.message); }
             });
         }
 
+        const successMessage = language === 'en'
+            ? `Booking confirmed for ${covers} ${covers > 1 ? 'guests' : 'guest'} on ${date} at ${normalizedTime || time} under the name ${guestName}.`
+            : `Réservation confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${normalizedTime || time} au nom de ${guestName}.`;
+
         return {
             success: true,
             reservation_id: booking.id,
-            message: `Réservation confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${normalizedTime || time} au nom de ${guestName}.`
+            message: successMessage
         };
     } catch (err: any) {
         console.error('[create_booking] Critical error:', err);
-        return { success: false, message: 'Erreur technique.' };
+        return {
+            success: false,
+            message: language === 'en' ? 'Technical error.' : 'Erreur technique.'
+        };
     }
 }
 

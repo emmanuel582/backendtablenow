@@ -43,7 +43,7 @@ router.get('/:id', async (req: AuthRequest, res: Response, next) => {
 
 router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, res: Response, next) => {
     try {
-        const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests } = req.body;
+        const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests, language } = req.body;
         const restaurantId = req.user!.restaurantId;
         const log = logger.child({ restaurantId, path: 'POST /bookings' });
 
@@ -54,6 +54,12 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
             .single();
 
         if (!restaurant) throw new NotFoundError('Restaurant');
+
+        // Manual booking : si la langue n'est pas fournie par le formulaire,
+        // on retombe sur celle du restaurant.
+        const guestLanguage: 'fr' | 'en' = language === 'en' || language === 'fr'
+            ? language
+            : (restaurant.language === 'en' ? 'en' : 'fr');
 
         const { data: booking, error } = await supabase
             .from('bookings')
@@ -67,21 +73,23 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
                 guest_phone:    guestPhone || null,
                 special_requests: specialRequests || null,
                 status:         'confirmed',
-                source:         'manual'
+                source:         'manual',
+                guest_language: guestLanguage
             })
             .select()
             .single();
 
         if (error || !booking) throw new DatabaseError('Failed to create booking', error);
 
-        log.info({ bookingId: booking.id }, 'Manual booking created');
+        log.info({ bookingId: booking.id, language: guestLanguage }, 'Manual booking created');
 
         // Non-blocking side effects
         setImmediate(async () => {
             try {
                 await emailService.sendBookingConfirmation({
                     to: guestEmail, restaurantName: restaurant.name,
-                    guestName, date, time, partySize, confirmationNumber: booking.id
+                    guestName, date, time, partySize, confirmationNumber: booking.id,
+                    language: guestLanguage
                 });
             } catch (e) { log.warn({ err: e }, 'Confirmation email failed'); }
 

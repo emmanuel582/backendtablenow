@@ -77,7 +77,7 @@ async function createCalendarEvent(restaurantData: any, reservation: any): Promi
 }
 
 // ============================================
-// Email confirmation client (via emailService)
+// Email confirmation client (via emailService) — langue du client
 // ============================================
 async function sendConfirmationEmail(restaurantData: any, reservation: any): Promise<boolean> {
     if (!reservation.email) return false;
@@ -89,34 +89,51 @@ async function sendConfirmationEmail(restaurantData: any, reservation: any): Pro
         date: reservation.date,
         time: reservation.time,
         partySize: reservation.covers,
-        confirmationNumber: reservation.booking_id || ''
+        confirmationNumber: reservation.booking_id || '',
+        language: reservation.language === 'en' ? 'en' : 'fr'
     });
     return true;
 }
 
 // ============================================
-// BCC vers le PMS du restaurant (via emailService)
+// BCC vers le PMS du restaurant — langue du restaurant
 // ============================================
 async function sendBccToPMS(restaurantData: any, reservation: any): Promise<boolean> {
     if (!restaurantData.pms_email) return false;
 
-    const dateFormatted = new Date(reservation.date).toLocaleDateString('fr-FR', {
+    const restaurantLang: 'fr' | 'en' = restaurantData.language === 'en' ? 'en' : 'fr';
+    const localeTag  = restaurantLang === 'en' ? 'en-GB' : 'fr-FR';
+    const dateFormatted = new Date(reservation.date).toLocaleDateString(localeTag, {
         weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
     });
 
+    const labels = restaurantLang === 'en' ? {
+        title:    'New booking via TableNow',
+        name:     'Name',     phone: 'Phone',  email: 'Email',
+        date:     'Date',     time:  'Time',   covers: 'Party size',
+        occasion: 'Occasion', empty: 'not provided',
+        subject:  `New booking — ${reservation.first_name} ${reservation.last_name} — ${reservation.date} ${reservation.time}`
+    } : {
+        title:    'Nouvelle réservation via TableNow',
+        name:     'Nom',      phone: 'Téléphone', email: 'Email',
+        date:     'Date',     time:  'Heure',     covers: 'Couverts',
+        occasion: 'Occasion', empty: 'non renseigné',
+        subject:  `Nouvelle réservation — ${reservation.first_name} ${reservation.last_name} — ${reservation.date} ${reservation.time}`
+    };
+
     await emailService.sendRawEmail({
         to: restaurantData.pms_email,
-        subject: `Nouvelle réservation — ${reservation.first_name} ${reservation.last_name} — ${reservation.date} ${reservation.time}`,
+        subject: labels.subject,
         html: `
-        <p><strong>Nouvelle réservation via TableNow</strong></p>
+        <p><strong>${labels.title}</strong></p>
         <ul>
-            <li><strong>Nom :</strong> ${reservation.first_name} ${reservation.last_name}</li>
-            <li><strong>Téléphone :</strong> ${reservation.phone}</li>
-            <li><strong>Email :</strong> ${reservation.email || 'non renseigné'}</li>
-            <li><strong>Date :</strong> ${dateFormatted}</li>
-            <li><strong>Heure :</strong> ${reservation.time}</li>
-            <li><strong>Couverts :</strong> ${reservation.covers}</li>
-            ${reservation.occasion ? `<li><strong>Occasion :</strong> ${reservation.occasion}</li>` : ''}
+            <li><strong>${labels.name} :</strong> ${reservation.first_name} ${reservation.last_name}</li>
+            <li><strong>${labels.phone} :</strong> ${reservation.phone}</li>
+            <li><strong>${labels.email} :</strong> ${reservation.email || labels.empty}</li>
+            <li><strong>${labels.date} :</strong> ${dateFormatted}</li>
+            <li><strong>${labels.time} :</strong> ${reservation.time}</li>
+            <li><strong>${labels.covers} :</strong> ${reservation.covers}</li>
+            ${reservation.occasion ? `<li><strong>${labels.occasion} :</strong> ${reservation.occasion}</li>` : ''}
         </ul>`
     });
     return true;
@@ -128,8 +145,9 @@ async function sendBccToPMS(restaurantData: any, reservation: any): Promise<bool
 export async function createReservation(req: Request, res: Response): Promise<void> {
     const {
         restaurant_id, first_name, last_name,
-        phone, email, covers, occasion, date, time
+        phone, email, covers, occasion, date, time, language
     } = req.body;
+    const guestLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
 
     const required: Record<string, any> = { restaurant_id, first_name, last_name, phone, covers, date, time };
     const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
@@ -171,7 +189,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
 
             const { data: restaurant } = await supabase
                 .from('restaurants')
-                .select('name, phone, address, pms_email, google_calendar_tokens')
+                .select('name, phone, address, pms_email, google_calendar_tokens, language')
                 .eq('id', restaurant_id)
                 .single();
 
@@ -209,6 +227,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 covers: coversInt,
                 occasion: occasion || null,
                 date, time,
+                language: guestLanguage,
                 booking_id: '' // set after insert
             };
 
@@ -223,7 +242,8 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                     covers: coversInt,
                     special_requests: occasion || null,
                     source: 'phone',
-                    status: 'confirmed'
+                    status: 'confirmed',
+                    guest_language: guestLanguage
                 })
                 .select()
                 .single();
@@ -260,21 +280,28 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 console.error('[create-reservation] BCC error (non-bloquant):', bccErr.message);
             }
 
+            const agentScript = guestLanguage === 'en'
+                ? `Perfect ${first_name}, your booking is confirmed for ${coversInt} ${coversInt > 1 ? 'guests' : 'guest'} on ${date} at ${time}. ${email ? 'You will receive a confirmation email. ' : ''}We look forward to welcoming you. See you soon!`
+                : `Parfait ${first_name}, votre réservation est confirmée pour ${coversInt} personne${coversInt > 1 ? 's' : ''} le ${date} à ${time}. ${email ? 'Vous allez recevoir un email de confirmation. ' : ''}Nous avons hâte de vous accueillir. À bientôt !`;
+
             return res.json({
                 success: true,
                 reservation_id: newBooking.id,
                 calendar_event_id: calendarEventId,
                 confirmation_email_sent: emailSent,
                 bcc_sent: bccSent,
-                agent_script: `Parfait ${first_name}, votre réservation est confirmée pour ${coversInt} personne${coversInt > 1 ? 's' : ''} le ${date} à ${time}. ${email ? `Vous allez recevoir un email de confirmation. ` : ''}Nous avons hâte de vous accueillir. À bientôt !`
+                agent_script: agentScript
             });
 
         } catch (err: any) {
             console.error('[create-reservation] Erreur critique:', err);
+            const errorScript = guestLanguage === 'en'
+                ? `I'm sorry, I'm experiencing a technical issue. Your booking could not be saved. Please call the restaurant directly.`
+                : `Je suis désolé, je rencontre une difficulté technique. Votre réservation n'a pas pu être enregistrée. Je vous invite à rappeler directement le restaurant.`;
             return res.status(500).json({
                 success: false,
                 reason: 'internal_error',
-                agent_script: `Je suis désolé, je rencontre une difficulté technique. Votre réservation n'a pas pu être enregistrée. Je vous invite à rappeler directement le restaurant.`
+                agent_script: errorScript
             });
         }
     });
