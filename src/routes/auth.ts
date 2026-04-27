@@ -62,8 +62,11 @@ router.post('/register', upload.fields([
             cuisineType,
             openingHours,
             specialFeatures,
-            faqText
+            faqText,
+            language
         } = req.body;
+        // Langue choisie à l'inscription — défaut FR si non fournie ou invalide.
+        const restaurantLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
 
         // Validation
         if (!email || !password || !restaurantName || !ownerName) {
@@ -130,6 +133,7 @@ router.post('/register', upload.fields([
                 is_verified: false,
                 status: 'pending',
                 slug,
+                language: restaurantLanguage,
             })
             .select()
             .single();
@@ -141,7 +145,7 @@ router.post('/register', upload.fields([
 
         // Send verification email
         try {
-            await emailService.sendVerificationEmail(email, verificationToken, restaurantName);
+            await emailService.sendVerificationEmail(email, verificationToken, restaurantName, restaurantLanguage);
         } catch (emailErr) {
             console.log('⚠️ Email blocked by Google or SendGrid. Bypassing lock to auto-verify the account...');
             // Immediately execute auto-verification & Vapi provisioning bypass
@@ -307,9 +311,9 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 })
                 .eq('id', restaurant.id);
 
-            // Send success notification
-            await emailService.sendRestaurantNotification({
-                to: restaurant.email,
+            // Send success notification — in restaurant's chosen language.
+            const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
+            const successPayload = restaurantLang === 'en' ? {
                 subject: '🎉 Your TableNow Account is Ready!',
                 message: `
           <h2>Welcome to TableNow!</h2>
@@ -340,6 +344,44 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             <li>✅ Answer FAQs about your restaurant</li>
           </ul>
         `
+            } : {
+                subject: '🎉 Votre compte TableNow est prêt !',
+                message: `
+          <h2>Bienvenue sur TableNow&nbsp;!</h2>
+          <p>Votre assistant téléphonique IA est configuré et prêt à prendre les appels.</p>
+
+          <div style="background: #f0f0f0; padding: 20px; margin: 20px 0; border-radius: 8px;">
+            <h3>📞 Votre numéro IA&nbsp;:</h3>
+            <p style="font-size: 24px; font-weight: bold; color: #000;">${phoneNumber.number}</p>
+
+            <h3>📧 Votre adresse BCC pour Zenchef / SevenRooms&nbsp;:</h3>
+            <p style="font-size: 18px; font-weight: bold; color: #000;">${bccEmail}</p>
+          </div>
+
+          <h3>Prochaines étapes&nbsp;:</h3>
+          <ol>
+            <li>Ajoutez l'adresse BCC à vos notifications Zenchef ou SevenRooms</li>
+            <li>Testez votre numéro IA en l'appelant</li>
+            <li>Configurez vos paramètres depuis le dashboard</li>
+            <li>Connectez votre Google Calendar (optionnel)</li>
+          </ol>
+
+          <p>Votre assistant est entraîné avec les informations de votre restaurant et capable de&nbsp;:</p>
+          <ul>
+            <li>✅ Prendre les réservations</li>
+            <li>✅ Vérifier la disponibilité</li>
+            <li>✅ Modifier les réservations</li>
+            <li>✅ Annuler les réservations</li>
+            <li>✅ Répondre aux questions fréquentes sur votre restaurant</li>
+          </ul>
+        `
+            };
+
+            await emailService.sendRestaurantNotification({
+                to:       restaurant.email,
+                subject:  successPayload.subject,
+                message:  successPayload.message,
+                language: restaurantLang
             });
 
             console.log('✅ VAPI provisioning completed successfully');
@@ -353,11 +395,21 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 .update({ status: 'error' })
                 .eq('id', restaurant.id);
 
-            // Notify about error
-            await emailService.sendRestaurantNotification({
-                to: restaurant.email,
-                subject: 'Account Verified - Setup In Progress',
+            // Notify about error — in restaurant language.
+            const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
+            const errorPayload = restaurantLang === 'en' ? {
+                subject: 'Account Verified — Setup In Progress',
                 message: 'Your account has been verified. We are setting up your AI assistant and will notify you once ready. This may take a few minutes.'
+            } : {
+                subject: 'Compte vérifié — configuration en cours',
+                message: 'Votre compte a été vérifié. Nous configurons votre assistant IA et vous notifierons dès qu\'il sera prêt. Cela ne prend que quelques minutes.'
+            };
+
+            await emailService.sendRestaurantNotification({
+                to:       restaurant.email,
+                subject:  errorPayload.subject,
+                message:  errorPayload.message,
+                language: restaurantLang
             });
         }
 

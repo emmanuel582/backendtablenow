@@ -89,6 +89,12 @@ Before create_booking, always recap:
 "[N] guests, [DAY] [DATE] at [TIME], name [FIRST LAST], callback [PHONE] — is that correct?"
 (adapt recap language to match caller's language)
 
+LANGUAGE FIELD IN create_booking — mandatory:
+When you call create_booking, ALWAYS include the locked language as the "language" parameter:
+- French call → "fr"
+- English call → "en"
+This is used to send the confirmation email in the caller's language.
+
 STYLE:
 - Max 2 sentences per response. Phone call = brief.
 - Warm and natural. Echo back what you understood: "Perfect, 4 people..."
@@ -133,9 +139,10 @@ STYLE:
                             covers:        { type: 'integer', description: 'Number of guests' },
                             first_name:    { type: 'string', description: 'First name' },
                             last_name:     { type: 'string', description: 'Last name' },
-                            phone:         { type: 'string', description: 'Caller phone number' }
+                            phone:         { type: 'string', description: 'Caller phone number' },
+                            language:      { type: 'string', enum: ['fr', 'en'], description: 'Locked language of the call: "fr" or "en"' }
                         },
-                        required: ['restaurant_id', 'date', 'time', 'covers', 'first_name', 'last_name', 'phone']
+                        required: ['restaurant_id', 'date', 'time', 'covers', 'first_name', 'last_name', 'phone', 'language']
                     }
                 },
                 server: { url: `${backendUrl}/api/vapi/create-booking`, timeoutSeconds: 10 }

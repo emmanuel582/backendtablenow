@@ -9,6 +9,9 @@ export const PhoneSchema = z.string().min(6).max(20);
 
 // ─── Booking ──────────────────────────────────────────────────────────────────
 
+// Langues supportées par la plate-forme (templates emails, UI, prompts VAPI).
+export const LanguageSchema = z.enum(['fr', 'en']);
+
 export const CreateBookingSchema = z.object({
     restaurant_id: UUIDSchema,
     date:          DateSchema,
@@ -19,7 +22,8 @@ export const CreateBookingSchema = z.object({
     phone:         PhoneSchema.optional(),
     email:         z.string().email().optional(),
     special_requests: z.string().max(500).optional(),
-    idempotency_key:  z.string().max(128).optional()  // Prevents duplicate bookings on VAPI retry
+    idempotency_key:  z.string().max(128).optional(),  // Prevents duplicate bookings on VAPI retry
+    language:      LanguageSchema.optional()           // Langue capturée côté caller (VAPI ou form public)
 });
 
 export const ManualCreateBookingSchema = z.object({
@@ -29,7 +33,12 @@ export const ManualCreateBookingSchema = z.object({
     date:            DateSchema,
     time:            TimeSchema,
     partySize:       z.number().int().min(1).max(50),
-    specialRequests: z.string().max(500).optional()
+    specialRequests: z.string().max(500).optional(),
+    language:        LanguageSchema.optional()         // Langue du client (formulaire ou défaut restaurant)
+});
+
+export const UpdateRestaurantLanguageSchema = z.object({
+    language: LanguageSchema
 });
 
 export const UpdateBookingSchema = z.object({
@@ -80,3 +89,5 @@ export type ManualCreateBookingInput = z.infer<typeof ManualCreateBookingSchema>
 export type UpdateBookingInput    = z.infer<typeof UpdateBookingSchema>;
 export type BookingQuery          = z.infer<typeof BookingQuerySchema>;
 export type CheckAvailabilityInput = z.infer<typeof CheckAvailabilitySchema>;
+export type Language               = z.infer<typeof LanguageSchema>;
+export type UpdateRestaurantLanguageInput = z.infer<typeof UpdateRestaurantLanguageSchema>;
