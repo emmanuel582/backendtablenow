@@ -11,8 +11,7 @@
         "start": "node dist/server.js",
         "setup-db": "ts-node src/scripts/setupDatabase.ts",
         "heroku-prebuild": "npm install",
-        "heroku-postbuild": "npm run build",
-        "render-build": "npm install && npm run build"
+        "heroku-postbuild": "npm run build"
     },
     "keywords": [
         "restaurant",
