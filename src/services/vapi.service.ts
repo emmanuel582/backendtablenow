@@ -1,4 +1,6 @@
 import axios from 'axios';
+import { config } from '../lib/config';
+import logger from '../lib/logger';
 
 const VAPI_API_KEY = process.env.VAPI_API_KEY!;
 const VAPI_BASE_URL = 'https://api.vapi.ai';
@@ -196,16 +198,70 @@ STYLE:
         }
     }
 
-    async createPhoneNumber(restaurantId: string, restaurantName: string): Promise<any> {
+    /**
+     * Provisionne un numéro de téléphone VAPI pour un restaurant.
+     *
+     * Mode 'pool' (défaut) : cherche un numéro déjà acheté et libre dans le compte.
+     * Mode 'dynamic'       : achat à la volée — NON IMPLÉMENTÉ pour l'instant, throw.
+     *
+     * @param assistantIdForCleanupOnFailure  Si fourni, l'assistant VAPI sera supprimé
+     *   côté VAPI en cas d'échec ici. Évite les orphelins : assistant créé + payé,
+     *   mais sans numéro lié → impossible de recevoir des appels.
+     */
+    async createPhoneNumber(
+        restaurantId: string,
+        restaurantName: string,
+        assistantIdForCleanupOnFailure?: string
+    ): Promise<any> {
+        const mode = config.vapi.provisioningMode;
         try {
+            if (mode === 'dynamic') {
+                // Placeholder : l'achat à la volée via POST /phone-number n'est pas
+                // encore implémenté. On échoue explicitement plutôt que de fallback
+                // silencieusement sur le pool — pour qu'une erreur soit visible
+                // immédiatement si quelqu'un active VAPI_PROVISIONING_MODE=dynamic.
+                throw new Error('VAPI_PROVISIONING_MODE=dynamic is not implemented yet — keep "pool" or implement POST /phone-number.');
+            }
+
             const response = await axios.get(`${VAPI_BASE_URL}/phone-number`, { headers: this.headers });
-            const available = response.data.find((p: any) => !p.assistantId && p.number);
-            if (!available) throw new Error('No available phone numbers in the VAPI pool.');
+            const all: any[] = response.data || [];
+            const available = all.find((p: any) => !p.assistantId && p.number);
+
+            if (!available) {
+                logger.error(
+                    {
+                        restaurantId,
+                        restaurantName,
+                        poolSize: all.length,
+                        mode,
+                    },
+                    'VAPI pool exhausted — add phone numbers to the VAPI account or set VAPI_PROVISIONING_MODE=dynamic'
+                );
+                throw new Error('No available phone numbers in the VAPI pool.');
+            }
+
             const serverUrl = `${process.env.BACKEND_URL}/api/vapi/assistant-config`;
             await axios.patch(`${VAPI_BASE_URL}/phone-number/${available.id}`, { serverUrl }, { headers: this.headers });
             console.log(`📞 Assigned: ${available.number} (${available.id})`);
             return available;
         } catch (error: any) {
+            // Cleanup orphan : si on a créé un assistant juste avant et que l'attribution
+            // du numéro échoue, on supprime l'assistant côté VAPI pour éviter un état
+            // bancal (assistant en DB, déjà facturé, mais sans numéro).
+            if (assistantIdForCleanupOnFailure) {
+                try {
+                    await this.deleteAssistant(assistantIdForCleanupOnFailure);
+                    logger.warn(
+                        { assistantId: assistantIdForCleanupOnFailure, restaurantId },
+                        'Cleaned up orphan VAPI assistant after phone provisioning failure'
+                    );
+                } catch (cleanupErr: any) {
+                    logger.error(
+                        { assistantId: assistantIdForCleanupOnFailure, restaurantId, err: cleanupErr?.message },
+                        'Failed to cleanup orphan VAPI assistant'
+                    );
+                }
+            }
             console.error('Error assigning VAPI phone number:', error.response?.data || error.message);
             throw error;
         }
