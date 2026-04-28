@@ -155,11 +155,17 @@ router.post('/register', upload.fields([
                 try {
                     const assistant = await vapiService.createAssistant(restaurant);
                     await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
-                    const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name);
+
+                    // BCC indépendant de VAPI : on l'écrit AVANT le numéro pour qu'il
+                    // survive même si le pool VAPI est épuisé. Le restaurant pourra
+                    // ainsi recevoir des emails de notification dès le retry du provisioning.
+                    const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
+                    await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
+
+                    const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
                     await supabase.from('restaurants').update({ vapi_phone_id: phoneNumber.id, vapi_phone_number: phoneNumber.number || phoneNumber.id }).eq('id', restaurant.id);
                     await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-                    const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
-                    await supabase.from('restaurants').update({ bcc_email: bccEmail, status: 'active' }).eq('id', restaurant.id);
+                    await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
                     console.log('✅ Auto-Provisioned VAPI successfully on fallback bypass!');
                 } catch (vapiErr) {
                     console.error('❌ Fallback VAPI provisioning error:', vapiErr);
@@ -282,8 +288,17 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 .update({ vapi_assistant_id: assistant.id })
                 .eq('id', restaurant.id);
 
-            // Create phone number
-            const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name);
+            // BCC indépendant de VAPI : on l'écrit AVANT le numéro pour qu'il
+            // survive même si le pool VAPI est épuisé. Le restaurant pourra
+            // ainsi recevoir des emails de notification dès le retry du provisioning.
+            const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
+            await supabase
+                .from('restaurants')
+                .update({ bcc_email: bccEmail })
+                .eq('id', restaurant.id);
+
+            // Create phone number — passe assistant.id pour cleanup orphan en cas d'échec
+            const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
             console.log('✅ VAPI Phone number created:', phoneNumber.number || phoneNumber.id);
 
             // SAVE PHONE DETAILS IMMEDIATELY
@@ -299,16 +314,10 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
             console.log('✅ Assistant linked to phone number');
 
-            // Generate BCC email with aliasing
-            const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
-
-            // Final update for status and BCC
+            // Final status update
             await supabase
                 .from('restaurants')
-                .update({
-                    bcc_email: bccEmail,
-                    status: 'active'
-                })
+                .update({ status: 'active' })
                 .eq('id', restaurant.id);
 
             // Send success notification — in restaurant's chosen language.

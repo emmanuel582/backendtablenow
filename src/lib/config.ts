@@ -19,6 +19,10 @@ const schema = z.object({
     EMAIL_FROM:   z.string().email('doit être un email valide (ex: info@tablenow.io)'),
     EMAIL_DOMAIN: z.string().min(1, 'requis (ex: tablenow.io — utilisé pour les alias BCC)'),
     FRONTEND_URL: z.string().url('doit être une URL valide (ex: https://app.tablenow.io)'),
+    // Mode de provisioning du numéro de téléphone VAPI lors de l'onboarding :
+    //   'pool'    → cherche un numéro déjà acheté et libre dans le compte VAPI (défaut)
+    //   'dynamic' → achat à la volée via POST /phone-number (NON IMPLÉMENTÉ — placeholder)
+    VAPI_PROVISIONING_MODE: z.enum(['pool', 'dynamic']).default('pool'),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -51,6 +55,9 @@ export const config = {
         domain: env.EMAIL_DOMAIN,
     },
     frontendUrl: env.FRONTEND_URL,
+    vapi: {
+        provisioningMode: env.VAPI_PROVISIONING_MODE,
+    },
 } as const;
 
 export type AppConfig = typeof config;
