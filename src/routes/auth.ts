@@ -9,6 +9,7 @@ import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 import ragService from '../services/rag.service';
 import { config } from '../lib/config';
+import { authenticateToken, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -65,7 +66,7 @@ router.post('/register', upload.fields([
             faqText,
             language
         } = req.body;
-        // Langue choisie à l'inscription — défaut FR si non fournie ou invalide.
+        // Langue choisie à l’inscription — défaut FR si non fournie ou invalide.
         const restaurantLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
 
         // Validation
@@ -150,15 +151,12 @@ router.post('/register', upload.fields([
             console.log('⚠️ Email blocked by Google or SendGrid. Bypassing lock to auto-verify the account...');
             // Immediately execute auto-verification & Vapi provisioning bypass
             await supabase.from('restaurants').update({ is_verified: true, verification_token: null, status: 'provisioning' }).eq('id', restaurant.id);
-            // Run Vapi Provisioning Async so it doesn't block the UI
+            // Run Vapi Provisioning Async so it doesn’t block the UI
             (async () => {
                 try {
                     const assistant = await vapiService.createAssistant(restaurant);
                     await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
 
-                    // BCC indépendant de VAPI : on l'écrit AVANT le numéro pour qu'il
-                    // survive même si le pool VAPI est épuisé. Le restaurant pourra
-                    // ainsi recevoir des emails de notification dès le retry du provisioning.
                     const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
                     await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
 
@@ -174,7 +172,7 @@ router.post('/register', upload.fields([
             })();
         }
 
-        // Process documents with RAG in background (don't block registration)
+        // Process documents with RAG in background (don’t block registration)
         if (files && Object.keys(files).length > 0) {
             processDocumentsInBackground(restaurant.id, files).catch(err => {
                 console.error('Background document processing error:', err);
@@ -278,30 +276,23 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         try {
             console.log('🚀 Provisioning VAPI for restaurant:', restaurant.name);
 
-            // Create assistant first with enhanced knowledge base
             const assistant = await vapiService.createAssistant(restaurant);
             console.log('✅ VAPI Assistant created:', assistant.id);
 
-            // SAVE ASSISTANT ID IMMEDIATELY
             await supabase
                 .from('restaurants')
                 .update({ vapi_assistant_id: assistant.id })
                 .eq('id', restaurant.id);
 
-            // BCC indépendant de VAPI : on l'écrit AVANT le numéro pour qu'il
-            // survive même si le pool VAPI est épuisé. Le restaurant pourra
-            // ainsi recevoir des emails de notification dès le retry du provisioning.
             const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
             await supabase
                 .from('restaurants')
                 .update({ bcc_email: bccEmail })
                 .eq('id', restaurant.id);
 
-            // Create phone number — passe assistant.id pour cleanup orphan en cas d'échec
             const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
             console.log('✅ VAPI Phone number created:', phoneNumber.number || phoneNumber.id);
 
-            // SAVE PHONE DETAILS IMMEDIATELY
             await supabase
                 .from('restaurants')
                 .update({
@@ -310,86 +301,27 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 })
                 .eq('id', restaurant.id);
 
-            // Link assistant to phone number
             await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
             console.log('✅ Assistant linked to phone number');
 
-            // Final status update
             await supabase
                 .from('restaurants')
                 .update({ status: 'active' })
                 .eq('id', restaurant.id);
 
-            // Send success notification — in restaurant's chosen language.
             const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
             const successPayload = restaurantLang === 'en' ? {
                 subject: '🎉 Your TableNow Account is Ready!',
-                message: `
-          <h2>Welcome to TableNow!</h2>
-          <p>Your AI phone assistant has been successfully set up and is ready to take calls.</p>
-
-          <div style="background: #f0f0f0; padding: 20px; margin: 20px 0; border-radius: 8px;">
-            <h3>📞 Your AI Phone Number:</h3>
-            <p style="font-size: 24px; font-weight: bold; color: #000;">${phoneNumber.number}</p>
-
-            <h3>📧 Your BCC Email for Zenchef/SevenRooms:</h3>
-            <p style="font-size: 18px; font-weight: bold; color: #000;">${bccEmail}</p>
-          </div>
-
-          <h3>Next Steps:</h3>
-          <ol>
-            <li>Add the BCC email to your Zenchef or SevenRooms booking notifications</li>
-            <li>Test your AI phone number by calling it</li>
-            <li>Configure your settings in the dashboard</li>
-            <li>Connect your Google Calendar (optional)</li>
-          </ol>
-
-          <p>Your AI assistant is trained with your restaurant information and ready to:</p>
-          <ul>
-            <li>✅ Take reservations</li>
-            <li>✅ Check availability</li>
-            <li>✅ Modify bookings</li>
-            <li>✅ Cancel reservations</li>
-            <li>✅ Answer FAQs about your restaurant</li>
-          </ul>
-        `
+                message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant has been successfully set up.</p><div style="background:#f0f0f0;padding:20px;margin:20px 0;border-radius:8px;"><h3>📞 Your AI Phone Number:</h3><p style="font-size:24px;font-weight:bold;">${phoneNumber.number}</p><h3>📧 Your BCC Email:</h3><p style="font-size:18px;font-weight:bold;">${bccEmail}</p></div>`
             } : {
-                subject: '🎉 Votre compte TableNow est prêt !',
-                message: `
-          <h2>Bienvenue sur TableNow&nbsp;!</h2>
-          <p>Votre assistant téléphonique IA est configuré et prêt à prendre les appels.</p>
-
-          <div style="background: #f0f0f0; padding: 20px; margin: 20px 0; border-radius: 8px;">
-            <h3>📞 Votre numéro IA&nbsp;:</h3>
-            <p style="font-size: 24px; font-weight: bold; color: #000;">${phoneNumber.number}</p>
-
-            <h3>📧 Votre adresse BCC pour Zenchef / SevenRooms&nbsp;:</h3>
-            <p style="font-size: 18px; font-weight: bold; color: #000;">${bccEmail}</p>
-          </div>
-
-          <h3>Prochaines étapes&nbsp;:</h3>
-          <ol>
-            <li>Ajoutez l'adresse BCC à vos notifications Zenchef ou SevenRooms</li>
-            <li>Testez votre numéro IA en l'appelant</li>
-            <li>Configurez vos paramètres depuis le dashboard</li>
-            <li>Connectez votre Google Calendar (optionnel)</li>
-          </ol>
-
-          <p>Votre assistant est entraîné avec les informations de votre restaurant et capable de&nbsp;:</p>
-          <ul>
-            <li>✅ Prendre les réservations</li>
-            <li>✅ Vérifier la disponibilité</li>
-            <li>✅ Modifier les réservations</li>
-            <li>✅ Annuler les réservations</li>
-            <li>✅ Répondre aux questions fréquentes sur votre restaurant</li>
-          </ul>
-        `
+                subject: '🎉 Votre compte TableNow est prêt !',
+                message: `<h2>Bienvenue sur TableNow !</h2><p>Votre assistant téléphonique IA est configuré.</p><div style="background:#f0f0f0;padding:20px;margin:20px 0;border-radius:8px;"><h3>📞 Votre numéro IA :</h3><p style="font-size:24px;font-weight:bold;">${phoneNumber.number}</p><h3>📧 Votre adresse BCC :</h3><p style="font-size:18px;font-weight:bold;">${bccEmail}</p></div>`
             };
 
             await emailService.sendRestaurantNotification({
-                to:       restaurant.email,
-                subject:  successPayload.subject,
-                message:  successPayload.message,
+                to: restaurant.email,
+                subject: successPayload.subject,
+                message: successPayload.message,
                 language: restaurantLang
             });
 
@@ -398,26 +330,24 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         } catch (vapiError: any) {
             console.error('❌ VAPI provisioning error:', vapiError);
 
-            // Update status to error
             await supabase
                 .from('restaurants')
                 .update({ status: 'error' })
                 .eq('id', restaurant.id);
 
-            // Notify about error — in restaurant language.
             const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
             const errorPayload = restaurantLang === 'en' ? {
                 subject: 'Account Verified — Setup In Progress',
-                message: 'Your account has been verified. We are setting up your AI assistant and will notify you once ready. This may take a few minutes.'
+                message: 'Your account has been verified. We are setting up your AI assistant.'
             } : {
                 subject: 'Compte vérifié — configuration en cours',
-                message: 'Votre compte a été vérifié. Nous configurons votre assistant IA et vous notifierons dès qu\'il sera prêt. Cela ne prend que quelques minutes.'
+                message: "Votre compte a été vérifié. Nous configurons votre assistant IA."
             };
 
             await emailService.sendRestaurantNotification({
-                to:       restaurant.email,
-                subject:  errorPayload.subject,
-                message:  errorPayload.message,
+                to: restaurant.email,
+                subject: errorPayload.subject,
+                message: errorPayload.message,
                 language: restaurantLang
             });
         }
@@ -443,7 +373,6 @@ router.post('/login', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Email and password required' });
         }
 
-        // Find restaurant
         const { data: restaurant, error: findError } = await supabase
             .from('restaurants')
             .select('*')
@@ -454,35 +383,24 @@ router.post('/login', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Check if verified
         if (!restaurant.is_verified) {
             return res.status(403).json({ error: 'Please verify your email first' });
         }
 
-        // Check password
         const isValidPassword = await bcrypt.compare(password, restaurant.password);
         if (!isValidPassword) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Generate JWT
         const token = jwt.sign(
-            {
-                id: restaurant.id,
-                email: restaurant.email,
-                restaurantId: restaurant.id
-            },
+            { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
             process.env.JWT_SECRET!,
             { expiresIn: '30d' }
         );
 
-        // Remove password from response
         const { password: _, ...restaurantData } = restaurant;
 
-        res.json({
-            token,
-            restaurant: restaurantData
-        });
+        res.json({ token, restaurant: restaurantData });
     } catch (error: any) {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Login failed' });
@@ -518,6 +436,83 @@ router.get('/me', async (req: Request, res: Response) => {
     } catch (error: any) {
         console.error('Get user error:', error);
         res.status(403).json({ error: 'Invalid token' });
+    }
+});
+
+/**
+ * Change password
+ */
+router.post('/change-password', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+        const { current_password, new_password } = req.body;
+        const restaurantId = req.user!.restaurantId;
+
+        if (!current_password || !new_password) {
+            return res.status(400).json({ error: 'Current password and new password required' });
+        }
+        if (new_password.length < 8) {
+            return res.status(400).json({ error: 'New password must be at least 8 characters' });
+        }
+
+        const { data: restaurant } = await supabase
+            .from('restaurants')
+            .select('password')
+            .eq('id', restaurantId)
+            .single();
+
+        if (!restaurant) {
+            return res.status(404).json({ error: 'Restaurant not found' });
+        }
+
+        const isValid = await bcrypt.compare(current_password, restaurant.password);
+        if (!isValid) {
+            return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+        }
+
+        const hashed = await bcrypt.hash(new_password, 10);
+        await supabase
+            .from('restaurants')
+            .update({ password: hashed })
+            .eq('id', restaurantId);
+
+        res.json({ message: 'Password updated successfully' });
+    } catch (error: any) {
+        console.error('Change password error:', error);
+        res.status(500).json({ error: 'Failed to update password' });
+    }
+});
+
+/**
+ * Change email
+ */
+router.post('/change-email', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+        const { new_email } = req.body;
+        const restaurantId = req.user!.restaurantId;
+
+        if (!new_email) {
+            return res.status(400).json({ error: 'New email required' });
+        }
+
+        const { data: existing } = await supabase
+            .from('restaurants')
+            .select('id')
+            .eq('email', new_email)
+            .single();
+
+        if (existing) {
+            return res.status(409).json({ error: 'Email already in use' });
+        }
+
+        await supabase
+            .from('restaurants')
+            .update({ email: new_email })
+            .eq('id', restaurantId);
+
+        res.json({ message: 'Email updated successfully' });
+    } catch (error: any) {
+        console.error('Change email error:', error);
+        res.status(500).json({ error: 'Failed to update email' });
     }
 });
 
