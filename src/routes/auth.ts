@@ -134,6 +134,12 @@ router.post('/register', upload.fields([
             console.error('Extra fields update skipped:', e);
         }
 
+        const token = jwt.sign(
+            { restaurantId: restaurant.id, email: restaurant.email },
+            process.env.JWT_SECRET!,
+            { expiresIn: '30d' }
+        );
+
         try {
             await emailService.sendVerificationEmail(email, verificationToken, restaurantName, restaurantLanguage);
         } catch (emailErr) {
@@ -163,8 +169,9 @@ router.post('/register', upload.fields([
         }
 
         res.status(201).json({
-            message: 'Account created successfully. You can log in immediately.',
+            message: 'Restaurant registered successfully',
             restaurantId: restaurant.id,
+            token,
         });
     } catch (error: any) {
         console.error('Registration error:', error);
