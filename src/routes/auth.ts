@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'path';
@@ -66,15 +67,12 @@ router.post('/register', upload.fields([
             faqText,
             language
         } = req.body;
-        // Langue choisie à l’inscription — défaut FR si non fournie ou invalide.
         const restaurantLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
 
-        // Validation
         if (!email || !password || !restaurantName || !ownerName) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        // Check if email already exists
         const { data: existingUser } = await supabase
             .from('restaurants')
             .select('id')
@@ -85,15 +83,10 @@ router.post('/register', upload.fields([
             return res.status(409).json({ error: 'Email already registered' });
         }
 
-        // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Generate verification token
         const verificationToken = uuidv4();
 
-        // Generate slug from restaurant name
         let slug = generateSlug(restaurantName);
-        // Ensure uniqueness by checking DB
         const { data: existing } = await supabase
             .from('restaurants')
             .select('id')
@@ -103,7 +96,6 @@ router.post('/register', upload.fields([
             slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
         }
 
-        // Process uploaded files
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
         const documents: any = {};
 
@@ -113,7 +105,6 @@ router.post('/register', upload.fields([
             if (files.policies) documents.policies_url = files.policies[0].path;
         }
 
-        // Create restaurant record
         const { data: restaurant, error: dbError } = await supabase
             .from('restaurants')
             .insert({
@@ -144,27 +135,21 @@ router.post('/register', upload.fields([
             return res.status(500).json({ error: 'Failed to create account' });
         }
 
-        // Send verification email
         try {
             await emailService.sendVerificationEmail(email, verificationToken, restaurantName, restaurantLanguage);
         } catch (emailErr) {
-            console.log('⚠️ Email blocked by Google or SendGrid. Bypassing lock to auto-verify the account...');
-            // Immediately execute auto-verification & Vapi provisioning bypass
+            console.log('⚠️ Email blocked. Auto-verifying account...');
             await supabase.from('restaurants').update({ is_verified: true, verification_token: null, status: 'provisioning' }).eq('id', restaurant.id);
-            // Run Vapi Provisioning Async so it doesn’t block the UI
             (async () => {
                 try {
                     const assistant = await vapiService.createAssistant(restaurant);
                     await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
-
                     const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
                     await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
-
                     const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
                     await supabase.from('restaurants').update({ vapi_phone_id: phoneNumber.id, vapi_phone_number: phoneNumber.number || phoneNumber.id }).eq('id', restaurant.id);
                     await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
                     await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
-                    console.log('✅ Auto-Provisioned VAPI successfully on fallback bypass!');
                 } catch (vapiErr) {
                     console.error('❌ Fallback VAPI provisioning error:', vapiErr);
                     await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
@@ -172,7 +157,6 @@ router.post('/register', upload.fields([
             })();
         }
 
-        // Process documents with RAG in background (don’t block registration)
         if (files && Object.keys(files).length > 0) {
             processDocumentsInBackground(restaurant.id, files).catch(err => {
                 console.error('Background document processing error:', err);
@@ -189,44 +173,17 @@ router.post('/register', upload.fields([
     }
 });
 
-/**
- * Process documents in background with RAG
- */
 async function processDocumentsInBackground(restaurantId: string, files: { [fieldname: string]: Express.Multer.File[] }) {
     try {
-        console.log(`📚 Starting background document processing for restaurant ${restaurantId}...`);
-
         if (files.menu && files.menu[0]) {
-            console.log('Processing menu document...');
-            await ragService.processAndStoreDocument(
-                restaurantId,
-                'menu',
-                files.menu[0].path,
-                files.menu[0].mimetype
-            );
+            await ragService.processAndStoreDocument(restaurantId, 'menu', files.menu[0].path, files.menu[0].mimetype);
         }
-
         if (files.faq && files.faq[0]) {
-            console.log('Processing FAQ document...');
-            await ragService.processAndStoreDocument(
-                restaurantId,
-                'faq',
-                files.faq[0].path,
-                files.faq[0].mimetype
-            );
+            await ragService.processAndStoreDocument(restaurantId, 'faq', files.faq[0].path, files.faq[0].mimetype);
         }
-
         if (files.policies && files.policies[0]) {
-            console.log('Processing policies document...');
-            await ragService.processAndStoreDocument(
-                restaurantId,
-                'policies',
-                files.policies[0].path,
-                files.policies[0].mimetype
-            );
+            await ragService.processAndStoreDocument(restaurantId, 'policies', files.policies[0].path, files.policies[0].mimetype);
         }
-
-        console.log(`✅ Background document processing completed for restaurant ${restaurantId}`);
     } catch (error) {
         console.error('Error in background document processing:', error);
     }
@@ -243,7 +200,6 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Verification token required' });
         }
 
-        // Find restaurant with this token
         const { data: restaurant, error: findError } = await supabase
             .from('restaurants')
             .select('*')
@@ -258,64 +214,38 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Email already verified' });
         }
 
-        // Update restaurant as verified
         const { error: updateError } = await supabase
             .from('restaurants')
-            .update({
-                is_verified: true,
-                verification_token: null,
-                status: 'provisioning'
-            })
+            .update({ is_verified: true, verification_token: null, status: 'provisioning' })
             .eq('id', restaurant.id);
 
         if (updateError) {
             return res.status(500).json({ error: 'Failed to verify email' });
         }
 
-        // Provision VAPI phone number and assistant
         try {
-            console.log('🚀 Provisioning VAPI for restaurant:', restaurant.name);
-
             const assistant = await vapiService.createAssistant(restaurant);
-            console.log('✅ VAPI Assistant created:', assistant.id);
-
-            await supabase
-                .from('restaurants')
-                .update({ vapi_assistant_id: assistant.id })
-                .eq('id', restaurant.id);
+            await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
 
             const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
-            await supabase
-                .from('restaurants')
-                .update({ bcc_email: bccEmail })
-                .eq('id', restaurant.id);
+            await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
 
             const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
-            console.log('✅ VAPI Phone number created:', phoneNumber.number || phoneNumber.id);
-
-            await supabase
-                .from('restaurants')
-                .update({
-                    vapi_phone_id: phoneNumber.id,
-                    vapi_phone_number: phoneNumber.number || phoneNumber.id
-                })
-                .eq('id', restaurant.id);
+            await supabase.from('restaurants').update({
+                vapi_phone_id: phoneNumber.id,
+                vapi_phone_number: phoneNumber.number || phoneNumber.id
+            }).eq('id', restaurant.id);
 
             await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-            console.log('✅ Assistant linked to phone number');
-
-            await supabase
-                .from('restaurants')
-                .update({ status: 'active' })
-                .eq('id', restaurant.id);
+            await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
 
             const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
             const successPayload = restaurantLang === 'en' ? {
                 subject: '🎉 Your TableNow Account is Ready!',
-                message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant has been successfully set up.</p><div style="background:#f0f0f0;padding:20px;margin:20px 0;border-radius:8px;"><h3>📞 Your AI Phone Number:</h3><p style="font-size:24px;font-weight:bold;">${phoneNumber.number}</p><h3>📧 Your BCC Email:</h3><p style="font-size:18px;font-weight:bold;">${bccEmail}</p></div>`
+                message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant is ready.</p><p><strong>📞 Your AI Phone Number:</strong> ${phoneNumber.number}</p><p><strong>📧 BCC Email:</strong> ${bccEmail}</p>`
             } : {
-                subject: '🎉 Votre compte TableNow est prêt !',
-                message: `<h2>Bienvenue sur TableNow !</h2><p>Votre assistant téléphonique IA est configuré.</p><div style="background:#f0f0f0;padding:20px;margin:20px 0;border-radius:8px;"><h3>📞 Votre numéro IA :</h3><p style="font-size:24px;font-weight:bold;">${phoneNumber.number}</p><h3>📧 Votre adresse BCC :</h3><p style="font-size:18px;font-weight:bold;">${bccEmail}</p></div>`
+                subject: '🎉 Votre compte TableNow est prêt !',
+                message: `<h2>Bienvenue sur TableNow&nbsp;!</h2><p>Votre assistant IA est prêt.</p><p><strong>📞 Votre numéro IA&nbsp;:</strong> ${phoneNumber.number}</p><p><strong>📧 Email BCC&nbsp;:</strong> ${bccEmail}</p>`
             };
 
             await emailService.sendRestaurantNotification({
@@ -324,38 +254,12 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 message: successPayload.message,
                 language: restaurantLang
             });
-
-            console.log('✅ VAPI provisioning completed successfully');
-
         } catch (vapiError: any) {
             console.error('❌ VAPI provisioning error:', vapiError);
-
-            await supabase
-                .from('restaurants')
-                .update({ status: 'error' })
-                .eq('id', restaurant.id);
-
-            const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
-            const errorPayload = restaurantLang === 'en' ? {
-                subject: 'Account Verified — Setup In Progress',
-                message: 'Your account has been verified. We are setting up your AI assistant.'
-            } : {
-                subject: 'Compte vérifié — configuration en cours',
-                message: "Votre compte a été vérifié. Nous configurons votre assistant IA."
-            };
-
-            await emailService.sendRestaurantNotification({
-                to: restaurant.email,
-                subject: errorPayload.subject,
-                message: errorPayload.message,
-                language: restaurantLang
-            });
+            await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
         }
 
-        res.json({
-            message: 'Email verified successfully! Your AI phone assistant is being set up.',
-            status: 'provisioning'
-        });
+        res.json({ message: 'Email verified successfully!', status: 'provisioning' });
     } catch (error: any) {
         console.error('Verification error:', error);
         res.status(500).json({ error: 'Verification failed' });
@@ -399,7 +303,6 @@ router.post('/login', async (req: Request, res: Response) => {
         );
 
         const { password: _, ...restaurantData } = restaurant;
-
         res.json({ token, restaurant: restaurantData });
     } catch (error: any) {
         console.error('Login error:', error);
@@ -440,7 +343,102 @@ router.get('/me', async (req: Request, res: Response) => {
 });
 
 /**
- * Change password
+ * Forgot password
+ * SQL required: ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255);
+ *               ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;
+ */
+router.post('/forgot-password', async (req: Request, res: Response) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: 'Email required' });
+        }
+
+        const { data: restaurant } = await supabase
+            .from('restaurants')
+            .select('id, email, name, language')
+            .eq('email', email)
+            .single();
+
+        // Always return 200 — never reveal whether email exists
+        if (!restaurant) {
+            return res.json({ message: 'If this email exists, a reset link has been sent.' });
+        }
+
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // +1h
+
+        await supabase
+            .from('restaurants')
+            .update({ reset_token: resetToken, reset_token_expires: resetExpires })
+            .eq('id', restaurant.id);
+
+        const resetLink = `https://app.tablenow.io/reset-password?token=${resetToken}`;
+        const isEn = restaurant.language === 'en';
+
+        await emailService.sendRawEmail({
+            to: restaurant.email,
+            subject: isEn
+                ? 'Reset your TableNow password'
+                : 'Réinitialisation de votre mot de passe TableNow',
+            html: isEn
+                ? `<p>Hello,</p><p>Click below to reset your password. This link expires in 1 hour.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Reset my password</a></p><p>If you didn't request this, ignore this email.</p>`
+                : `<p>Bonjour,</p><p>Cliquez ci-dessous pour réinitialiser votre mot de passe. Ce lien expire dans 1 heure.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Réinitialiser mon mot de passe</a></p><p>Si vous n'avez pas fait cette demande, ignorez cet email.</p>`,
+            text: isEn ? `Reset your password: ${resetLink}` : `Réinitialisez votre mot de passe : ${resetLink}`,
+        });
+
+        res.json({ message: 'If this email exists, a reset link has been sent.' });
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({ error: 'Failed to process request' });
+    }
+});
+
+/**
+ * Reset password — validate token + set new password
+ */
+router.post('/reset-password', async (req: Request, res: Response) => {
+    try {
+        const { token, password } = req.body;
+
+        if (!token || !password) {
+            return res.status(400).json({ error: 'Token and password required' });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters' });
+        }
+
+        const { data: restaurant } = await supabase
+            .from('restaurants')
+            .select('id, reset_token, reset_token_expires')
+            .eq('reset_token', token)
+            .single();
+
+        if (!restaurant) {
+            return res.status(400).json({ error: 'Invalid or expired token' });
+        }
+
+        if (!restaurant.reset_token_expires || new Date(restaurant.reset_token_expires) < new Date()) {
+            return res.status(400).json({ error: 'Invalid or expired token' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        await supabase
+            .from('restaurants')
+            .update({ password: hashedPassword, reset_token: null, reset_token_expires: null })
+            .eq('id', restaurant.id);
+
+        res.json({ message: 'Password reset successfully' });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ error: 'Failed to reset password' });
+    }
+});
+
+/**
+ * Change password (authenticated)
  */
 router.post('/change-password', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
@@ -483,7 +481,7 @@ router.post('/change-password', authenticateToken, async (req: AuthRequest, res:
 });
 
 /**
- * Change email
+ * Change email (authenticated)
  */
 router.post('/change-email', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
