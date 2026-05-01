@@ -18,7 +18,6 @@ function generateSlug(name: string): string {
     return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-// Configure multer for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, 'uploads/');
@@ -31,12 +30,11 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const allowedTypes = /pdf|doc|docx|txt|jpg|jpeg|png/;
         const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
         const mimetype = allowedTypes.test(file.mimetype);
-
         if (extname && mimetype) {
             cb(null, true);
         } else {
@@ -46,7 +44,7 @@ const upload = multer({
 });
 
 /**
- * Register new restaurant with document upload
+ * POST /auth/register
  */
 router.post('/register', upload.fields([
     { name: 'menu', maxCount: 1 },
@@ -65,7 +63,12 @@ router.post('/register', upload.fields([
             openingHours,
             specialFeatures,
             faqText,
-            language
+            language,
+            // Google Places enrichment
+            lat, lng,
+            google_place_id, google_maps_url,
+            opening_hours_google,
+            website,
         } = req.body;
         const restaurantLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
 
@@ -126,6 +129,13 @@ router.post('/register', upload.fields([
                 status: 'pending',
                 slug,
                 language: restaurantLanguage,
+                // Places-enriched fields
+                website:               website            || null,
+                lat:                   lat != null ? Number(lat) : null,
+                lng:                   lng != null ? Number(lng) : null,
+                google_place_id:       google_place_id    || null,
+                google_maps_url:       google_maps_url    || null,
+                opening_hours_google:  opening_hours_google || null,
             })
             .select()
             .single();
@@ -190,7 +200,7 @@ async function processDocumentsInBackground(restaurantId: string, files: { [fiel
 }
 
 /**
- * Verify email and provision VAPI
+ * POST /auth/verify-email
  */
 router.post('/verify-email', async (req: Request, res: Response) => {
     try {
@@ -267,7 +277,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 });
 
 /**
- * Login
+ * POST /auth/login
  */
 router.post('/login', async (req: Request, res: Response) => {
     try {
@@ -311,7 +321,7 @@ router.post('/login', async (req: Request, res: Response) => {
 });
 
 /**
- * Get current user
+ * GET /auth/me
  */
 router.get('/me', async (req: Request, res: Response) => {
     try {
@@ -343,9 +353,7 @@ router.get('/me', async (req: Request, res: Response) => {
 });
 
 /**
- * Forgot password
- * SQL required: ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255);
- *               ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;
+ * POST /auth/forgot-password
  */
 router.post('/forgot-password', async (req: Request, res: Response) => {
     try {
@@ -360,13 +368,12 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
             .eq('email', email)
             .single();
 
-        // Always return 200 — never reveal whether email exists
         if (!restaurant) {
             return res.json({ message: 'If this email exists, a reset link has been sent.' });
         }
 
         const resetToken = crypto.randomBytes(32).toString('hex');
-        const resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // +1h
+        const resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
         await supabase
             .from('restaurants')
@@ -395,7 +402,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 });
 
 /**
- * Reset password — validate token + set new password
+ * POST /auth/reset-password
  */
 router.post('/reset-password', async (req: Request, res: Response) => {
     try {
@@ -438,7 +445,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 });
 
 /**
- * Change password (authenticated)
+ * POST /auth/change-password
  */
 router.post('/change-password', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
@@ -481,7 +488,7 @@ router.post('/change-password', authenticateToken, async (req: AuthRequest, res:
 });
 
 /**
- * Change email (authenticated)
+ * POST /auth/change-email
  */
 router.post('/change-email', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
