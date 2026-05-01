@@ -4,7 +4,7 @@ import supabase from '../config/supabase';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
 const router = Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-06-20' });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-04-10' });
 
 const PRICE_IDS: Record<string, string> = {
     en_cas:      process.env.STRIPE_PRICE_EN_CAS!,
