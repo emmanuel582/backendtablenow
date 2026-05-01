@@ -110,6 +110,13 @@ router.post('/register', upload.fields([
                 google_place_id:       google_place_id    || null,
                 google_maps_url:       google_maps_url    || null,
                 opening_hours_google:  opening_hours_google || null,
+                // Trial
+                trial_ends_at:       new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                plan:                'trial',
+                is_active:           true,
+                trial_email_j2_sent: false,
+                trial_email_j1_sent: false,
+                trial_email_j0_sent: false,
             })
             .select()
             .single();
@@ -207,7 +214,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 subject: '🎉 Your TableNow Account is Ready!',
                 message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant is ready.</p><p><strong>📞 Your AI Phone Number:</strong> ${phoneNumber.number}</p><p><strong>📧 BCC Email:</strong> ${bccEmail}</p>`,
             } : {
-                subject: '🎉 Votre compte TableNow est prêt !',
+                subject: '🎉 Votre compte TableNow est prêt !',
                 message: `<h2>Bienvenue sur TableNow&nbsp;!</h2><p>Votre assistant IA est prêt.</p><p><strong>📞 Votre numéro IA&nbsp;:</strong> ${phoneNumber.number}</p><p><strong>📧 Email BCC&nbsp;:</strong> ${bccEmail}</p>`,
             };
             await emailService.sendRestaurantNotification({ to: restaurant.email, ...successPayload, language: restaurantLang });
@@ -277,7 +284,6 @@ router.get('/me', async (req: Request, res: Response) => {
 
 /**
  * POST /auth/forgot-password
- * Requires: reset_token VARCHAR(255), reset_token_expires TIMESTAMPTZ columns
  */
 router.post('/forgot-password', async (req: Request, res: Response) => {
     try {
@@ -305,7 +311,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
             html: isEn
                 ? `<p>Hello,</p><p>Click below to reset your password. This link expires in 1 hour.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Reset my password</a></p><p>If you didn't request this, ignore this email.</p>`
                 : `<p>Bonjour,</p><p>Cliquez ci-dessous pour réinitialiser votre mot de passe. Ce lien expire dans 1 heure.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Réinitialiser mon mot de passe</a></p><p>Si vous n'avez pas fait cette demande, ignorez cet email.</p>`,
-            text: isEn ? `Reset your password: ${resetLink}` : `Réinitialisez votre mot de passe : ${resetLink}`,
+            text: isEn ? `Reset your password: ${resetLink}` : `Réinitialisez votre mot de passe : ${resetLink}`,
         });
 
         res.json({ message: 'If this email exists, a reset link has been sent.' });
