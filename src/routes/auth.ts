@@ -171,6 +171,7 @@ router.post('/register', upload.fields([
         res.status(201).json({
             message: 'Restaurant registered successfully',
             restaurantId: restaurant.id,
+            slug: restaurant.slug,
             token,
         });
     } catch (error: any) {
