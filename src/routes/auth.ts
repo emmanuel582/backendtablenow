@@ -103,13 +103,6 @@ router.post('/register', upload.fields([
                 status: 'pending',
                 slug,
                 language: restaurantLanguage,
-                // Places-enriched fields
-                website:               website            || null,
-                lat:                   lat != null ? Number(lat) : null,
-                lng:                   lng != null ? Number(lng) : null,
-                google_place_id:       google_place_id    || null,
-                google_maps_url:       google_maps_url    || null,
-                opening_hours_google:  opening_hours_google || null,
                 // Trial
                 trial_ends_at:       new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
                 plan:                'trial',
@@ -124,6 +117,21 @@ router.post('/register', upload.fields([
         if (dbError) {
             console.error('Database error:', dbError);
             return res.status(500).json({ error: 'Failed to create account' });
+        }
+
+        // Store Places-enriched fields in a separate UPDATE to avoid INSERT failure
+        // if these columns don't yet exist in the DB schema
+        try {
+            await supabase.from('restaurants').update({
+                google_maps_url:      google_maps_url      || null,
+                website:              website              || null,
+                lat:                  lat != null ? Number(lat) : null,
+                lng:                  lng != null ? Number(lng) : null,
+                google_place_id:      google_place_id      || null,
+                opening_hours_google: opening_hours_google || null,
+            }).eq('id', restaurant.id);
+        } catch (e) {
+            console.error('Extra fields update skipped:', e);
         }
 
         try {
@@ -141,9 +149,9 @@ router.post('/register', upload.fields([
                     await supabase.from('restaurants').update({ vapi_phone_id: phoneNumber.id, vapi_phone_number: phoneNumber.number || phoneNumber.id }).eq('id', restaurant.id);
                     await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
                     await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
-                } catch (vapiErr) {
-                    console.error('❌ Fallback VAPI provisioning error:', vapiErr);
-                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
+                } catch (vapiError: any) {
+                    console.error('VAPI provisioning skipped:', vapiError.message);
+                    // do NOT throw — registration continues without phone number
                 }
             })();
         }
@@ -214,7 +222,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                 subject: '🎉 Your TableNow Account is Ready!',
                 message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant is ready.</p><p><strong>📞 Your AI Phone Number:</strong> ${phoneNumber.number}</p><p><strong>📧 BCC Email:</strong> ${bccEmail}</p>`,
             } : {
-                subject: '🎉 Votre compte TableNow est prêt !',
+                subject: '🎉 Votre compte TableNow est prêt !',
                 message: `<h2>Bienvenue sur TableNow&nbsp;!</h2><p>Votre assistant IA est prêt.</p><p><strong>📞 Votre numéro IA&nbsp;:</strong> ${phoneNumber.number}</p><p><strong>📧 Email BCC&nbsp;:</strong> ${bccEmail}</p>`,
             };
             await emailService.sendRestaurantNotification({ to: restaurant.email, ...successPayload, language: restaurantLang });
