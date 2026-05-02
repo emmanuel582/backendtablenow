@@ -25,13 +25,14 @@ import settingsRoutes   from './routes/settings';
 import restaurantsRoutes from './routes/restaurants';
 import prefillRouter    from './routes/prefill.route';
 import contactRoutes    from './routes/contact';
+import referralRoutes   from './routes/referral';
 
 const app: Application = express();
 const PORT = process.env.PORT || 5000;
 
 app.set('trust proxy', 1);
 
-// ── Security ──────────────────────────────────────────────────────────────────
+// ── Security ────────────────────────────────────────────────────────────────────────────────
 app.use(helmet());
 
 const allowedOrigins = [
@@ -51,30 +52,30 @@ app.use(cors({
     credentials: true
 }));
 
-// ── Raw body capture (for VAPI HMAC verification) ─────────────────────────────
+// ── Raw body capture (for VAPI HMAC verification) ───────────────────────────────────────────
 app.use('/api/vapi/webhook', express.raw({ type: 'application/json' }), (req: Request, _res: Response, next: NextFunction) => {
     (req as any).rawBody = req.body;
     req.body = JSON.parse(req.body.toString());
     next();
 });
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// ── Middleware ────────────────────────────────────────────────────────────────────────────
 app.use(correlationId);
 app.use(pinoHttp({ logger, useLevel: 'info' }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ── Rate limiting ─────────────────────────────────────────────────────────────
+// ── Rate limiting ───────────────────────────────────────────────────────────────────────────
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200, standardHeaders: true, legacyHeaders: false });
 app.use('/api/', limiter);
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// ── Health ────────────────────────────────────────────────────────────────────────────────────
 app.get('/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString(), version: process.env.npm_package_version });
 });
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ── Routes ──────────────────────────────────────────────────────────────────────────────────
 app.use('/api/auth',         authRoutes);
 app.use('/api/dashboard',    dashboardRoutes);
 app.use('/api/bookings',     bookingRoutes);
@@ -86,17 +87,18 @@ app.use('/api/calendar',     calendarRoutes);
 app.use('/api/settings',     settingsRoutes);
 app.use('/api/restaurants',  restaurantsRoutes);
 app.use('/api/contact',      contactRoutes);
+app.use('/api/referral',     referralRoutes);
 app.use(prefillRouter);
 
 // Backward compat: VAPI tools also reachable at /vapi/* (no rate limit)
 app.use('/vapi', vapiRoutes);
 
-// ── 404 ───────────────────────────────────────────────────────────────────────
+// ── 404 ────────────────────────────────────────────────────────────────────────────────────
 app.use((req: Request, res: Response) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: `Route ${req.method} ${req.path} not found` } });
 });
 
-// ── Unified error handler (must be last) ──────────────────────────────────────
+// ── Unified error handler (must be last) ──────────────────────────────────────────────────────
 app.use(errorHandler);
 
 app.listen(PORT, () => {
