@@ -26,6 +26,7 @@ import restaurantsRoutes from './routes/restaurants';
 import prefillRouter    from './routes/prefill.route';
 import contactRoutes    from './routes/contact';
 import stripeRoutes     from './routes/stripe';
+import referralRoutes from './routes/referral';
 import { checkTrialEmails } from './cron/trialEmails';
 
 const app: Application = express();
@@ -91,6 +92,7 @@ app.use('/api/settings',     settingsRoutes);
 app.use('/api/restaurants',  restaurantsRoutes);
 app.use('/api/contact',      contactRoutes);
 app.use('/api/stripe',       stripeRoutes);
+app.use('/api/referral', referralRoutes);
 app.use(prefillRouter);
 
 // Backward compat: VAPI tools also reachable at /vapi/* (no rate limit)
