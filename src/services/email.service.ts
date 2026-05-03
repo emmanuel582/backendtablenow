@@ -96,14 +96,18 @@ export class EmailService {
         time: string;
         partySize: number;
         confirmationNumber: string;
+        language?: 'fr' | 'en';
     }): Promise<void> {
+        const lang = data.language === 'en' ? 'en' : 'fr';
         // Format date as DD/MM/YYYY for display
         const displayDate = data.date.split('-').reverse().join('/');
 
         await this.transporter.sendMail({
             from: `TableNow <${this.fromEmail}>`,
             to: data.to,
-            subject: `Confirmation de réservation — ${data.restaurantName}`,
+            subject: lang === 'en'
+                ? `Booking confirmation — ${data.restaurantName}`
+                : `Confirmation de réservation — ${data.restaurantName}`,
             html: `
         <!DOCTYPE html>
         <html>
@@ -121,21 +125,21 @@ export class EmailService {
         </head>
         <body>
           <div class="container">
-            <div class="header"><h1>Réservation confirmée</h1></div>
+            <div class="header"><h1>${lang === 'en' ? 'Booking confirmed' : 'Réservation confirmée'}</h1></div>
             <div class="content">
-              <h2>Bonjour ${data.guestName},</h2>
-              <p>Votre réservation chez <strong>${data.restaurantName}</strong> est confirmée.</p>
+              <h2>${lang === 'en' ? `Hello ${data.guestName},` : `Bonjour ${data.guestName},`}</h2>
+              <p>${lang === 'en' ? `Your reservation at <strong>${data.restaurantName}</strong> is confirmed.` : `Votre réservation chez <strong>${data.restaurantName}</strong> est confirmée.`}</p>
               <div class="booking-details">
-                <div class="detail-row"><span class="label">Numéro de confirmation :</span><span>${data.confirmationNumber}</span></div>
-                <div class="detail-row"><span class="label">Restaurant :</span><span>${data.restaurantName}</span></div>
-                <div class="detail-row"><span class="label">Date :</span><span>${displayDate}</span></div>
-                <div class="detail-row"><span class="label">Heure :</span><span>${data.time}</span></div>
-                <div class="detail-row"><span class="label">Nombre de personnes :</span><span>${data.partySize} personne${data.partySize > 1 ? 's' : ''}</span></div>
+                <div class="detail-row"><span class="label">${lang === 'en' ? 'Confirmation #:' : 'Numéro de confirmation :'}</span><span>${data.confirmationNumber}</span></div>
+                <div class="detail-row"><span class="label">${lang === 'en' ? 'Restaurant:' : 'Restaurant :'}</span><span>${data.restaurantName}</span></div>
+                <div class="detail-row"><span class="label">${lang === 'en' ? 'Date:' : 'Date :'}</span><span>${displayDate}</span></div>
+                <div class="detail-row"><span class="label">${lang === 'en' ? 'Time:' : 'Heure :'}</span><span>${data.time}</span></div>
+                <div class="detail-row"><span class="label">${lang === 'en' ? 'Guests:' : 'Nombre de personnes :'}</span><span>${data.partySize} ${lang === 'en' ? `guest${data.partySize > 1 ? 's' : ''}` : `personne${data.partySize > 1 ? 's' : ''}`}</span></div>
               </div>
-              <p>Nous avons hâte de vous accueillir !</p>
-              <p><small>Pour modifier ou annuler votre réservation, contactez directement le restaurant.</small></p>
+              <p>${lang === 'en' ? 'We look forward to welcoming you!' : 'Nous avons hâte de vous accueillir !'}</p>
+              <p><small>${lang === 'en' ? 'To modify or cancel, please contact the restaurant directly.' : 'Pour modifier ou annuler votre réservation, contactez directement le restaurant.'}</small></p>
             </div>
-            <div class="footer"><p>Propulsé par TableNow</p></div>
+            <div class="footer"><p>${lang === 'en' ? 'Powered by TableNow' : 'Propulsé par TableNow'}</p></div>
           </div>
         </body>
         </html>
