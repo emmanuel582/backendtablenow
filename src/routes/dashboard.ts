@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import { normalizeBooking } from '../services/booking.service';
@@ -6,6 +6,121 @@ import { DatabaseError } from '../lib/errors';
 import logger from '../lib/logger';
 
 const router = Router();
+
+// ─── POST /dashboard/insights/refresh ────────────────────────────────────────
+// Called by pg_cron every 10 minutes via Supabase pg_net.
+// Protected by INTERNAL_SECRET — no JWT needed.
+
+router.post('/insights/refresh', async (req: Request, res: Response) => {
+    const secret = req.headers['x-internal-secret'];
+    if (secret !== process.env.INTERNAL_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        const today = new Date().toISOString().split('T')[0];
+
+        // Fetch all active restaurants
+        const { data: restaurants, error: rErr } = await supabase
+            .from('restaurants')
+            .select('id, capacity, opening_hours')
+            .eq('status', 'active');
+
+        if (rErr) throw rErr;
+
+        let refreshed = 0;
+
+        for (const restaurant of (restaurants || [])) {
+            try {
+                const rid = restaurant.id;
+                const totalCapacity = restaurant.capacity || 40;
+
+                // Confirmed bookings today
+                const { data: todayBookings } = await supabase
+                    .from('bookings')
+                    .select('*')
+                    .eq('restaurant_id', rid)
+                    .eq('status', 'confirmed')
+                    .or(`booking_date.eq.${today},booked_for.gte.${today}T00:00:00.and.booked_for.lte.${today}T23:59:59`);
+
+                const confirmedCovers = (todayBookings || []).reduce((s: number, b: any) => s + (b.party_size || b.covers || 0), 0);
+                const confirmedReservations = (todayBookings || []).length;
+                const occupancyRate = totalCapacity > 0 ? Math.round((confirmedCovers / totalCapacity) * 100) / 100 : 0;
+
+                // Calls today
+                const { data: todayCalls } = await supabase
+                    .from('call_logs')
+                    .select('*')
+                    .eq('restaurant_id', rid)
+                    .gte('created_at', `${today}T00:00:00`)
+                    .lte('created_at', `${today}T23:59:59`);
+
+                const calls = todayCalls || [];
+                const abandonedCalls = calls.filter((c: any) => (c.duration || 0) < 15 || c.status === 'missed' || c.status === 'failed').length;
+                const unplacedRequests = calls.filter((c: any) => (c.duration || 0) > 20 && c.reservation_booked === false).length;
+
+                // Peak unplaced hour
+                const peakBuckets: Record<number, number> = {};
+                calls.filter((c: any) => c.reservation_booked === false && (c.duration || 0) > 20)
+                    .forEach((c: any) => { const h = new Date(c.created_at).getHours(); peakBuckets[h] = (peakBuckets[h] || 0) + 1; });
+
+                const peakUnplacedTime = Object.keys(peakBuckets).length > 0
+                    ? `${Object.entries(peakBuckets).sort((a, b) => b[1] - a[1])[0][0]}h`
+                    : null;
+
+                // Slot analysis
+                const dayOfWeek = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][new Date().getDay()];
+                const todayHours = restaurant.opening_hours?.[dayOfWeek];
+                const slotBuckets: Record<string, number> = {};
+
+                if (todayHours?.open) {
+                    const startH = parseInt((todayHours.from || '12:00').split(':')[0]);
+                    const endH   = parseInt((todayHours.to   || '23:00').split(':')[0]);
+                    for (let h = startH; h < endH; h++) {
+                        for (const m of [0, 30]) slotBuckets[`${h}h${m === 30 ? '30' : '00'}`] = 0;
+                    }
+                    (todayBookings || []).forEach((b: any) => {
+                        const dt = b.booked_for || (b.booking_date && b.booking_time ? `${b.booking_date}T${b.booking_time}` : null);
+                        if (!dt) return;
+                        const d = new Date(dt);
+                        const h = d.getHours(); const m = d.getMinutes() >= 30 ? 30 : 0;
+                        const label = `${h}h${m === 30 ? '30' : '00'}`;
+                        if (slotBuckets[label] !== undefined) slotBuckets[label]++;
+                    });
+                }
+
+                const slotEntries = Object.entries(slotBuckets).sort((a, b) => a[1] - b[1]);
+                const bestSlotTime   = slotEntries[0]?.[0] || null;
+                const lowestSlotTime = slotEntries[0]?.[0] || null;
+
+                // Upsert into insights_cache
+                await supabase.from('insights_cache').upsert({
+                    restaurant_id: rid,
+                    date: today,
+                    occupancy_rate: occupancyRate,
+                    lowest_slot_time: lowestSlotTime,
+                    unplaced_requests: unplacedRequests,
+                    peak_unplaced_time: peakUnplacedTime,
+                    confirmed_reservations: confirmedReservations,
+                    abandoned_calls: abandonedCalls,
+                    best_slot_time: bestSlotTime,
+                    computed_at: new Date().toISOString(),
+                }, { onConflict: 'restaurant_id,date' });
+
+                refreshed++;
+            } catch (err) {
+                logger.error({ err, restaurantId: restaurant.id }, 'Failed to refresh insights for restaurant');
+            }
+        }
+
+        logger.info({ refreshed, today }, '✅ Insights cache refreshed');
+        res.json({ refreshed, date: today });
+    } catch (err: any) {
+        logger.error({ err }, 'Insights refresh error');
+        res.status(500).json({ error: 'Refresh failed' });
+    }
+});
+
 router.use(authenticateToken);
 
 // ─── GET /dashboard/stats ─────────────────────────────────────────────────────
