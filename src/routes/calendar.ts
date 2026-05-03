@@ -50,7 +50,7 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
         res.cookie('oauth_state', state, {
             httpOnly: true,
             secure: true,
-            sameSite: 'lax',
+            sameSite: 'none',
             maxAge: 10 * 60 * 1000
         });
 

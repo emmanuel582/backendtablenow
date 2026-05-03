@@ -3,7 +3,7 @@ import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 
-const calendarService = require('../services/calendar.service').default;
+import calendarService from '../services/calendar.service';
 
 const router = Router();
 
@@ -481,18 +481,16 @@ async function handleCallEnded(event: any) {
     const structuredOutputs = event.artifact?.structuredOutputs || {};
     const soValues = Object.values(structuredOutputs) as any[];
 
-    const getSOByKey = (key: string) => {
-        const entry = Object.entries(structuredOutputs).find(([k]) => k.toLowerCase().includes(key));
-        return entry ? entry[1] : null;
-    };
-
     const reservationBooked = soValues.find(v => typeof v === 'boolean' && v !== null) ?? null;
     const bookingDetails = soValues.find(v => typeof v === 'object' && v !== null && !Array.isArray(v)) ?? null;
     const appointmentDate = bookingDetails?.date ?? null;
     const appointmentTime = bookingDetails?.time ?? null;
     const callSummary = soValues.find(v => typeof v === 'string' && v.length > 20) ?? null;
-    const successEvaluation = soValues.find(v => typeof v === 'boolean') ?? null;
-    const customerSentiment = soValues.find(v => ['positive','neutral','negative'].includes(v)) ?? null;
+    const successEvaluation = (() => {
+        const entry = Object.entries(structuredOutputs).find(([k]) => k.toLowerCase().includes('success'));
+        return entry ? (entry[1] as boolean | null) : null;
+    })();
+    const customerSentiment = soValues.find(v => ['positive','neutral','negative'].includes(v as string)) ?? null;
 
     if (!duration && startedAt && endedAt) {
         const start = new Date(startedAt).getTime();

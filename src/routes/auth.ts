@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import multer from 'multer';
 import path from 'path';
@@ -9,7 +8,7 @@ import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 import ragService from '../services/rag.service';
-import { config } from '../lib/config';
+import logger from '../lib/logger';
 
 const router = Router();
 
@@ -17,182 +16,159 @@ function generateSlug(name: string): string {
     return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
+// ── Multer ────────────────────────────────────────────────────────────────────
+
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => { cb(null, 'uploads/'); },
-    filename:    (req, file, cb) => {
-        cb(null, `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`);
-    },
+    destination: (_req, _file, cb) => cb(null, 'uploads/'),
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`),
 });
 
 const upload = multer({
     storage,
     limits: { fileSize: 10 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const ok = /pdf|doc|docx|txt|jpg|jpeg|png/.test(path.extname(file.originalname).toLowerCase())
-                && /pdf|doc|docx|txt|jpg|jpeg|png/.test(file.mimetype);
-        ok ? cb(null, true) : cb(new Error('Only documents and images are allowed'));
+    fileFilter: (_req, file, cb) => {
+        const allowed = /pdf|doc|docx|txt|jpg|jpeg|png/;
+        if (allowed.test(path.extname(file.originalname).toLowerCase()) && allowed.test(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only documents and images are allowed'));
+        }
     },
 });
 
-/**
- * POST /auth/register
- */
+// ── Shared provisioning ───────────────────────────────────────────────────────
+// Single source of truth used by verify-email, fallback bypass, and retry-vapi.
+
+export async function provisionVapi(restaurant: {
+    id: string;
+    name: string;
+    email: string;
+    phone?: string;
+}): Promise<{
+    assistantId: string;
+    phoneNumber: string;
+    phoneId: string;
+    bccEmail: string;
+}> {
+    const log = logger.child({ restaurantId: restaurant.id, fn: 'provisionVapi' });
+    log.info('🚀 Starting VAPI provisioning');
+
+    const assistant = await vapiService.createAssistant(restaurant);
+    log.info({ assistantId: assistant.id }, '✅ Assistant created');
+
+    await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
+
+    const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name);
+    log.info({ phone: phoneNumber.number, phoneId: phoneNumber.id }, '✅ Phone assigned');
+
+    await supabase.from('restaurants').update({
+        vapi_phone_id: phoneNumber.id,
+        vapi_phone_number: phoneNumber.number || phoneNumber.id,
+    }).eq('id', restaurant.id);
+
+    await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
+    log.info('✅ Assistant linked to phone');
+
+    const emailDomain = process.env.EMAIL_DOMAIN;
+    if (!emailDomain) throw new Error('EMAIL_DOMAIN env variable is not set');
+    const bccEmail = `bcc+r-${restaurant.id}@${emailDomain}`;
+
+    await supabase.from('restaurants').update({ bcc_email: bccEmail, status: 'active' }).eq('id', restaurant.id);
+    log.info({ bccEmail }, '✅ VAPI provisioning complete');
+
+    return { assistantId: assistant.id, phoneNumber: phoneNumber.number || phoneNumber.id, phoneId: phoneNumber.id, bccEmail };
+}
+
+// ── Register ──────────────────────────────────────────────────────────────────
+
 router.post('/register', upload.fields([
     { name: 'menu', maxCount: 1 },
     { name: 'faq', maxCount: 1 },
     { name: 'policies', maxCount: 1 },
 ]), async (req: Request, res: Response) => {
     try {
-        const {
-            email, password,
-            restaurantName, ownerName,
-            phone, address, cuisineType,
-            openingHours, specialFeatures, faqText,
-            language,
-            // Google Places enrichment
-            lat, lng,
-            google_place_id, google_maps_url,
-            opening_hours_google,
-            website,
-        } = req.body;
-
-        const restaurantLanguage: 'fr' | 'en' = language === 'en' ? 'en' : 'fr';
+        const { email, password, restaurantName, ownerName, phone, address, cuisineType, openingHours, specialFeatures, faqText } = req.body;
 
         if (!email || !password || !restaurantName || !ownerName) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        const { data: existingUser } = await supabase
-            .from('restaurants').select('id').eq('email', email).single();
+        const { data: existingUser } = await supabase.from('restaurants').select('id').eq('email', email).single();
         if (existingUser) return res.status(409).json({ error: 'Email already registered' });
 
-        const hashedPassword    = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(password, 10);
         const verificationToken = uuidv4();
 
         let slug = generateSlug(restaurantName);
-        const { data: existing } = await supabase
-            .from('restaurants').select('id').eq('slug', slug).single();
-        if (existing) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+        const { data: existingSlug } = await supabase.from('restaurants').select('id').eq('slug', slug).single();
+        if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
 
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-        const documents: any = {};
-        if (files) {
-            if (files.menu)     documents.menu_url     = files.menu[0].path;
-            if (files.faq)      documents.faq_url      = files.faq[0].path;
-            if (files.policies) documents.policies_url = files.policies[0].path;
-        }
+        const documents: Record<string, string> = {};
+        if (files?.menu)     documents.menu_url = files.menu[0].path;
+        if (files?.faq)      documents.faq_url = files.faq[0].path;
+        if (files?.policies) documents.policies_url = files.policies[0].path;
 
         const { data: restaurant, error: dbError } = await supabase
             .from('restaurants')
             .insert({
-                email,
-                password: hashedPassword,
-                name: restaurantName,
-                owner_name: ownerName,
-                phone,
-                address,
-                cuisine_type: cuisineType,
-                opening_hours: openingHours,
-                special_features: specialFeatures,
-                faq_text: faqText,
-                menu_url:          documents.menu_url,
-                faq_document_url:  documents.faq_url,
-                policies_url:      documents.policies_url,
-                verification_token: verificationToken,
-                is_verified: false,
-                status: 'pending',
-                slug,
-                language: restaurantLanguage,
-                // Trial
-                trial_ends_at:       new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-                plan:                'trial',
-                is_active:           true,
-                trial_email_j2_sent: false,
-                trial_email_j1_sent: false,
-                trial_email_j0_sent: false,
+                email, password: hashedPassword, name: restaurantName, owner_name: ownerName,
+                phone, address, cuisine_type: cuisineType, opening_hours: openingHours,
+                special_features: specialFeatures, faq_text: faqText,
+                menu_url: documents.menu_url, faq_document_url: documents.faq_url, policies_url: documents.policies_url,
+                verification_token: verificationToken, is_verified: false, status: 'pending', slug,
             })
             .select()
             .single();
 
-        if (dbError) {
-            console.error('Database error:', dbError);
+        if (dbError || !restaurant) {
+            logger.error({ dbError }, 'Registration DB error');
             return res.status(500).json({ error: 'Failed to create account' });
         }
 
-        // Store Places-enriched fields in a separate UPDATE to avoid INSERT failure
-        // if these columns don't yet exist in the DB schema
+        // Send verification email — if it fails, auto-verify and provision
         try {
-            await supabase.from('restaurants').update({
-                google_maps_url:      google_maps_url      || null,
-                website:              website              || null,
-                lat:                  lat != null ? Number(lat) : null,
-                lng:                  lng != null ? Number(lng) : null,
-                google_place_id:      google_place_id      || null,
-                opening_hours_google: opening_hours_google || null,
-            }).eq('id', restaurant.id);
-        } catch (e) {
-            console.error('Extra fields update skipped:', e);
-        }
-
-        const token = jwt.sign(
-            { restaurantId: restaurant.id, email: restaurant.email },
-            process.env.JWT_SECRET!,
-            { expiresIn: '30d' }
-        );
-
-        try {
-            await emailService.sendVerificationEmail(email, verificationToken, restaurantName, restaurantLanguage);
+            await emailService.sendVerificationEmail(email, verificationToken, restaurantName);
         } catch (emailErr) {
-            console.log('⚠️ Email blocked. Auto-verifying account...');
+            logger.warn({ emailErr }, '⚠️ Verification email failed — auto-verifying');
             await supabase.from('restaurants').update({ is_verified: true, verification_token: null, status: 'provisioning' }).eq('id', restaurant.id);
-            (async () => {
+            setImmediate(async () => {
                 try {
-                    const assistant = await vapiService.createAssistant(restaurant);
-                    await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
-                    const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
-                    await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
-                    const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
-                    await supabase.from('restaurants').update({ vapi_phone_id: phoneNumber.id, vapi_phone_number: phoneNumber.number || phoneNumber.id }).eq('id', restaurant.id);
-                    await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-                    await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
-                } catch (vapiError: any) {
-                    console.error('VAPI provisioning skipped:', vapiError.message);
-                    // do NOT throw — registration continues without phone number
+                    await provisionVapi(restaurant);
+                } catch (vapiErr) {
+                    logger.error({ vapiErr }, '❌ Fallback VAPI provisioning error');
+                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
                 }
-            })();
+            });
         }
 
         if (files && Object.keys(files).length > 0) {
             processDocumentsInBackground(restaurant.id, files).catch(err =>
-                console.error('Background document processing error:', err)
+                logger.error({ err }, 'Background document processing error')
             );
         }
 
-        res.status(201).json({
-            message: 'Restaurant registered successfully',
-            restaurantId: restaurant.id,
-            slug: restaurant.slug,
-            token,
-        });
+        res.status(201).json({ message: 'Account created successfully.', restaurantId: restaurant.id });
     } catch (error: any) {
-        console.error('Registration error:', error);
+        logger.error({ error }, 'Registration error');
         res.status(500).json({ error: 'Registration failed' });
     }
 });
 
+// ── Background RAG processing ─────────────────────────────────────────────────
+
 async function processDocumentsInBackground(restaurantId: string, files: { [fieldname: string]: Express.Multer.File[] }) {
-    try {
-        if (files.menu?.[0])     await ragService.processAndStoreDocument(restaurantId, 'menu',     files.menu[0].path,     files.menu[0].mimetype);
-        if (files.faq?.[0])      await ragService.processAndStoreDocument(restaurantId, 'faq',      files.faq[0].path,      files.faq[0].mimetype);
-        if (files.policies?.[0]) await ragService.processAndStoreDocument(restaurantId, 'policies', files.policies[0].path, files.policies[0].mimetype);
-    } catch (error) {
-        console.error('Error in background document processing:', error);
+    logger.info({ restaurantId }, '📚 Starting background document processing');
+    for (const type of ['menu', 'faq', 'policies'] as const) {
+        if (files[type]?.[0]) {
+            await ragService.processAndStoreDocument(restaurantId, type, files[type][0].path, files[type][0].mimetype);
+        }
     }
+    logger.info({ restaurantId }, '✅ Background document processing complete');
 }
 
-/**
- * POST /auth/verify-email
- */
+// ── Verify email ──────────────────────────────────────────────────────────────
+
 router.post('/verify-email', async (req: Request, res: Response) => {
     try {
         const { token } = req.body;
@@ -200,64 +176,69 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         const { data: restaurant, error: findError } = await supabase
             .from('restaurants').select('*').eq('verification_token', token).single();
+
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
-        if (restaurant.is_verified)   return res.status(400).json({ error: 'Email already verified' });
+        if (restaurant.is_verified) return res.status(400).json({ error: 'Email already verified' });
 
         const { error: updateError } = await supabase
             .from('restaurants')
             .update({ is_verified: true, verification_token: null, status: 'provisioning' })
             .eq('id', restaurant.id);
+
         if (updateError) return res.status(500).json({ error: 'Failed to verify email' });
 
-        try {
-            const assistant = await vapiService.createAssistant(restaurant);
-            await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
+        // Provision VAPI — non-blocking after response
+        setImmediate(async () => {
+            try {
+                const { phoneNumber, bccEmail } = await provisionVapi(restaurant);
+                await emailService.sendRestaurantNotification({
+                    to: restaurant.email,
+                    subject: '🎉 Votre compte TableNow est prêt !',
+                    message: `
+                        <h2>Bienvenue sur TableNow !</h2>
+                        <p>Votre assistant IA est configuré et prêt à prendre des appels.</p>
+                        <div style="background:#f0f0f0;padding:20px;margin:20px 0;border-radius:8px;">
+                          <h3>📞 Votre numéro IA :</h3>
+                          <p style="font-size:24px;font-weight:bold;color:#000;">${phoneNumber}</p>
+                          <h3>📧 Votre e-mail BCC (Zenchef/SevenRooms) :</h3>
+                          <p style="font-size:18px;font-weight:bold;color:#000;">${bccEmail}</p>
+                        </div>
+                        <h3>Prochaines étapes :</h3>
+                        <ol>
+                          <li>Ajoutez le BCC e-mail dans vos notifications Zenchef ou SevenRooms</li>
+                          <li>Testez votre numéro IA en l'appelant</li>
+                          <li>Configurez vos paramètres dans le tableau de bord</li>
+                        </ol>
+                    `,
+                });
+            } catch (vapiError: any) {
+                logger.error({ vapiError }, '❌ VAPI provisioning error after verification');
+                await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
+                await emailService.sendRestaurantNotification({
+                    to: restaurant.email,
+                    subject: 'Compte vérifié — configuration en cours',
+                    message: 'Votre compte a été vérifié. Nous configurons votre assistant IA et vous notifierons dès que tout est prêt.',
+                });
+            }
+        });
 
-            const bccEmail = `bcc+r-${restaurant.id}@${config.email.domain}`;
-            await supabase.from('restaurants').update({ bcc_email: bccEmail }).eq('id', restaurant.id);
-
-            const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name, assistant.id);
-            await supabase.from('restaurants').update({
-                vapi_phone_id:     phoneNumber.id,
-                vapi_phone_number: phoneNumber.number || phoneNumber.id,
-            }).eq('id', restaurant.id);
-
-            await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-            await supabase.from('restaurants').update({ status: 'active' }).eq('id', restaurant.id);
-
-            const restaurantLang: 'fr' | 'en' = restaurant.language === 'en' ? 'en' : 'fr';
-            const successPayload = restaurantLang === 'en' ? {
-                subject: '🎉 Your TableNow Account is Ready!',
-                message: `<h2>Welcome to TableNow!</h2><p>Your AI phone assistant is ready.</p><p><strong>📞 Your AI Phone Number:</strong> ${phoneNumber.number}</p><p><strong>📧 BCC Email:</strong> ${bccEmail}</p>`,
-            } : {
-                subject: '🎉 Votre compte TableNow est prêt !',
-                message: `<h2>Bienvenue sur TableNow&nbsp;!</h2><p>Votre assistant IA est prêt.</p><p><strong>📞 Votre numéro IA&nbsp;:</strong> ${phoneNumber.number}</p><p><strong>📧 Email BCC&nbsp;:</strong> ${bccEmail}</p>`,
-            };
-            await emailService.sendRestaurantNotification({ to: restaurant.email, ...successPayload, language: restaurantLang });
-        } catch (vapiError: any) {
-            console.error('❌ VAPI provisioning error:', vapiError);
-            await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
-        }
-
-        res.json({ message: 'Email verified successfully!', status: 'provisioning' });
+        res.json({ message: 'Email vérifié. Votre assistant IA est en cours de configuration.', status: 'provisioning' });
     } catch (error: any) {
-        console.error('Verification error:', error);
+        logger.error({ error }, 'Verification error');
         res.status(500).json({ error: 'Verification failed' });
     }
 });
 
-/**
- * POST /auth/login
- */
+// ── Login ─────────────────────────────────────────────────────────────────────
+
 router.post('/login', async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const { data: restaurant, error: findError } = await supabase
-            .from('restaurants').select('*').eq('email', email).single();
+        const { data: restaurant, error: findError } = await supabase.from('restaurants').select('*').eq('email', email).single();
         if (findError || !restaurant) return res.status(401).json({ error: 'Invalid credentials' });
-        if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
+        if (!restaurant.is_verified) return res.status(403).json({ error: 'Please verify your email first' });
 
         const isValidPassword = await bcrypt.compare(password, restaurant.password);
         if (!isValidPassword) return res.status(401).json({ error: 'Invalid credentials' });
@@ -271,96 +252,29 @@ router.post('/login', async (req: Request, res: Response) => {
         const { password: _, ...restaurantData } = restaurant;
         res.json({ token, restaurant: restaurantData });
     } catch (error: any) {
-        console.error('Login error:', error);
+        logger.error({ error }, 'Login error');
         res.status(500).json({ error: 'Login failed' });
     }
 });
 
-/**
- * GET /auth/me
- */
+// ── Get current user ──────────────────────────────────────────────────────────
+
 router.get('/me', async (req: Request, res: Response) => {
     try {
         const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
+        const token = authHeader?.split(' ')[1];
         if (!token) return res.status(401).json({ error: 'Access token required' });
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-        const { data: restaurant, error } = await supabase
-            .from('restaurants').select('*').eq('id', decoded.restaurantId).single();
+
+        const { data: restaurant, error } = await supabase.from('restaurants').select('*').eq('id', decoded.restaurantId).single();
         if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         const { password: _, ...restaurantData } = restaurant;
         res.json({ restaurant: restaurantData });
     } catch (error: any) {
-        console.error('Get user error:', error);
+        logger.error({ error }, 'Get user error');
         res.status(403).json({ error: 'Invalid token' });
-    }
-});
-
-/**
- * POST /auth/forgot-password
- */
-router.post('/forgot-password', async (req: Request, res: Response) => {
-    try {
-        const { email } = req.body;
-        if (!email) return res.status(400).json({ error: 'Email required' });
-
-        const { data: restaurant } = await supabase
-            .from('restaurants').select('id, email, name, language').eq('email', email).single();
-
-        if (!restaurant) return res.json({ message: 'If this email exists, a reset link has been sent.' });
-
-        const resetToken   = crypto.randomBytes(32).toString('hex');
-        const resetExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-
-        await supabase.from('restaurants')
-            .update({ reset_token: resetToken, reset_token_expires: resetExpires })
-            .eq('id', restaurant.id);
-
-        const resetLink = `https://app.tablenow.io/reset-password?token=${resetToken}`;
-        const isEn = restaurant.language === 'en';
-
-        await emailService.sendRawEmail({
-            to: restaurant.email,
-            subject: isEn ? 'Reset your TableNow password' : 'Réinitialisation de votre mot de passe TableNow',
-            html: isEn
-                ? `<p>Hello,</p><p>Click below to reset your password. This link expires in 1 hour.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Reset my password</a></p><p>If you didn't request this, ignore this email.</p>`
-                : `<p>Bonjour,</p><p>Cliquez ci-dessous pour réinitialiser votre mot de passe. Ce lien expire dans 1 heure.</p><p><a href="${resetLink}" style="background:#b8f000;color:#000;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">Réinitialiser mon mot de passe</a></p><p>Si vous n'avez pas fait cette demande, ignorez cet email.</p>`,
-            text: isEn ? `Reset your password: ${resetLink}` : `Réinitialisez votre mot de passe : ${resetLink}`,
-        });
-
-        res.json({ message: 'If this email exists, a reset link has been sent.' });
-    } catch (error) {
-        console.error('Forgot password error:', error);
-        res.status(500).json({ error: 'Failed to process request' });
-    }
-});
-
-/**
- * POST /auth/reset-password
- */
-router.post('/reset-password', async (req: Request, res: Response) => {
-    try {
-        const { token, password } = req.body;
-        if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
-        if (password.length < 8)  return res.status(400).json({ error: 'Password must be at least 8 characters' });
-
-        const { data: restaurant } = await supabase
-            .from('restaurants').select('id, reset_token, reset_token_expires').eq('reset_token', token).single();
-        if (!restaurant) return res.status(400).json({ error: 'Invalid or expired token' });
-        if (!restaurant.reset_token_expires || new Date(restaurant.reset_token_expires) < new Date())
-            return res.status(400).json({ error: 'Invalid or expired token' });
-
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await supabase.from('restaurants')
-            .update({ password: hashedPassword, reset_token: null, reset_token_expires: null })
-            .eq('id', restaurant.id);
-
-        res.json({ message: 'Password reset successfully' });
-    } catch (error) {
-        console.error('Reset password error:', error);
-        res.status(500).json({ error: 'Failed to reset password' });
     }
 });
 

@@ -1,13 +1,29 @@
 import { Router, Request, Response } from 'express';
+import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 
 const router = Router();
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 // DELETE /api/bookings/:id
 // Soft delete — status = cancelled
-// ─────────────────────────────────────────
-router.delete('/bookings/:id', async (req: Request, res: Response) => {
+// 🔒 Requires authentication
+// ─────────────────────────────────────────────
+router.delete('/bookings/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    const restaurantId = req.user!.restaurantId;
+
+    // Ensure the booking belongs to the authenticated restaurant
+    const { data: existing, error: findError } = await supabase
+        .from('bookings')
+        .select('id')
+        .eq('id', req.params.id)
+        .eq('restaurant_id', restaurantId)
+        .single();
+
+    if (findError || !existing) {
+        return res.status(404).json({ error: 'Réservation introuvable' });
+    }
+
     const { data, error } = await supabase
         .from('bookings')
         .update({ status: 'cancelled' })
@@ -19,10 +35,10 @@ router.delete('/bookings/:id', async (req: Request, res: Response) => {
     res.json({ message: 'Réservation annulée', booking: data });
 });
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 // GET /api/customers?phone=+336...&restaurant_id=...
 // Profil complet d'un convive + historique
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 router.get('/customers', async (req: Request, res: Response) => {
     const { phone, restaurant_id } = req.query as { phone?: string; restaurant_id?: string };
 
@@ -41,14 +57,14 @@ router.get('/customers', async (req: Request, res: Response) => {
     res.json(data);
 });
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 // PATCH /api/customers/:id
 // Mettre à jour allergies, préférences, notes
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 router.patch('/customers/:id', async (req: Request, res: Response) => {
     const { name, email, allergies, preferences, notes } = req.body;
 
-    const updates: Record<string, any> = {};
+    const updates: Record<string, unknown> = {};
     if (name !== undefined)        updates.name = name;
     if (email !== undefined)       updates.email = email;
     if (allergies !== undefined)   updates.allergies = allergies;
@@ -66,11 +82,11 @@ router.patch('/customers/:id', async (req: Request, res: Response) => {
     res.json(data);
 });
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 // POST /api/internal/mark-noshows
 // Marquer no_show — protégé par INTERNAL_SECRET
 // Cron VPS : 0 * * * *
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────
 router.post('/internal/mark-noshows', async (req: Request, res: Response) => {
     const secret = req.headers['x-internal-secret'];
     if (secret !== process.env.INTERNAL_SECRET) {

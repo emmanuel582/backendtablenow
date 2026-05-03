@@ -1,39 +1,35 @@
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
-import { config } from '../lib/config';
-import { getTemplates, SupportedLanguage } from '../templates/email';
 
-/**
- * Service d'envoi d'emails (transactionnels + parsing entrant).
- *
- * Toute la configuration SMTP et l'adresse expéditrice sont lues depuis
- * src/lib/config.ts (validé au boot). Les contenus FR/EN vivent dans
- * src/templates/email/{fr,en}/. Chaque méthode publique accepte un paramètre
- * `language` ('fr' par défaut) — l'appelant est responsable de fournir la
- * langue capturée côté DB (restaurants.language ou bookings.guest_language).
- */
+// ── Fail fast if SMTP env is missing — never fall back to hardcoded credentials
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465', 10);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const EMAIL_FROM = process.env.EMAIL_FROM;
+
+if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !EMAIL_FROM) {
+    throw new Error(
+        'Missing required SMTP environment variables: SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM'
+    );
+}
+
 export class EmailService {
-    private readonly fromAddress = `TableNow <${config.email.from}>`;
-    private readonly fromAlertAddress = `TableNow Alert <${config.email.from}>`;
+    private readonly fromEmail = EMAIL_FROM as string;
     private readonly transporter: nodemailer.Transporter;
 
     constructor() {
-        // Connexion SMTP — secure=true uniquement sur le port 465 (TLS implicite).
-        // Sur 587, on laisse nodemailer faire un STARTTLS opportuniste.
         this.transporter = nodemailer.createTransport({
-            host: config.smtp.host,
-            port: config.smtp.port,
-            secure: config.smtp.port === 465,
+            host: SMTP_HOST,
+            port: SMTP_PORT,
+            secure: SMTP_PORT === 465,
             auth: {
-                user: config.smtp.user,
-                pass: config.smtp.pass,
+                user: SMTP_USER,
+                pass: SMTP_PASS,
             },
-            tls: {
-                rejectUnauthorized: false,
-            },
+            tls: { rejectUnauthorized: false },
         });
 
-        // Vérification non bloquante.
         this.transporter.verify((error) => {
             if (error) {
                 console.error('❌ SMTP connection error:', error);
@@ -44,39 +40,53 @@ export class EmailService {
     }
 
     /**
-     * Email de vérification d'inscription envoyé au restaurateur.
-     * @param language Langue choisie par le restaurateur à l'inscription.
+     * Send verification email
      */
-    async sendVerificationEmail(
-        to: string,
-        verificationToken: string,
-        restaurantName: string,
-        language: SupportedLanguage = 'fr',
-    ): Promise<void> {
-        const t = getTemplates(language).verification;
-        const data = {
-            verificationUrl: `${config.frontendUrl}/verify-email?token=${verificationToken}`,
-            restaurantName,
-        };
+    async sendVerificationEmail(to: string, verificationToken: string, restaurantName: string): Promise<void> {
+        const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
-        try {
-            await this.transporter.sendMail({
-                from:    this.fromAddress,
-                to,
-                subject: t.subject(data),
-                html:    t.html(data),
-            });
-            console.log(`Verification email sent to ${to} via SMTP (lang=${language})`);
-        } catch (error: any) {
-            console.error('Error sending verification email:', error.message);
-            throw error;
-        }
+        await this.transporter.sendMail({
+            from: `TableNow <${this.fromEmail}>`,
+            to,
+            subject: 'Vérifiez votre compte TableNow',
+            html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: #000; color: #fff; padding: 20px; text-align: center; }
+            .content { padding: 30px 20px; background: #f9f9f9; }
+            .button { display: inline-block; padding: 12px 30px; background: #000; color: #fff; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header"><h1>TableNow</h1></div>
+            <div class="content">
+              <h2>Bienvenue sur TableNow, ${restaurantName} !</h2>
+              <p>Vous y êtes presque ! Vérifiez votre adresse e-mail pour activer votre compte.</p>
+              <p style="text-align: center;">
+                <a href="${verificationUrl}" class="button" target="_blank">Vérifier mon compte</a>
+              </p>
+              <p>Une fois vérifié, votre assistant IA sera configuré automatiquement.</p>
+              <p>Si le bouton ne fonctionne pas, copiez ce lien :</p>
+              <p style="word-break: break-all; color: #666;">${verificationUrl}</p>
+            </div>
+            <div class="footer"><p>© ${new Date().getFullYear()} TableNow. Tous droits réservés.</p></div>
+          </div>
+        </body>
+        </html>
+      `,
+        });
+
+        console.log(`Verification email sent to ${to}`);
     }
 
     /**
-     * Confirmation de réservation envoyée au client final.
-     * @param language Langue capturée au moment de la réservation
-     *                 (bookings.guest_language).
+     * Send booking confirmation email — fully in French
      */
     async sendBookingConfirmation(data: {
         to: string;
@@ -86,69 +96,120 @@ export class EmailService {
         time: string;
         partySize: number;
         confirmationNumber: string;
-        language?: SupportedLanguage;
     }): Promise<void> {
-        const language = data.language ?? 'fr';
-        const t = getTemplates(language).bookingConfirmation;
-        const tplData = {
-            restaurantName:     data.restaurantName,
-            guestName:          data.guestName,
-            date:               data.date,
-            time:               data.time,
-            partySize:          data.partySize,
-            confirmationNumber: data.confirmationNumber,
-        };
+        // Format date as DD/MM/YYYY for display
+        const displayDate = data.date.split('-').reverse().join('/');
 
-        try {
-            await this.transporter.sendMail({
-                from:    this.fromAddress,
-                to:      data.to,
-                subject: t.subject(tplData),
-                html:    t.html(tplData),
-            });
-            console.log(`Booking confirmation sent to ${data.to} via SMTP (lang=${language})`);
-        } catch (error: any) {
-            console.error('Error sending booking confirmation:', error.message);
-            throw error;
-        }
+        await this.transporter.sendMail({
+            from: `TableNow <${this.fromEmail}>`,
+            to: data.to,
+            subject: `Confirmation de réservation — ${data.restaurantName}`,
+            html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: #000; color: #fff; padding: 20px; text-align: center; }
+            .content { padding: 30px 20px; background: #f9f9f9; }
+            .booking-details { background: #fff; padding: 20px; border-left: 4px solid #000; margin: 20px 0; }
+            .detail-row { padding: 10px 0; border-bottom: 1px solid #eee; }
+            .label { font-weight: bold; display: inline-block; width: 180px; }
+            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header"><h1>Réservation confirmée</h1></div>
+            <div class="content">
+              <h2>Bonjour ${data.guestName},</h2>
+              <p>Votre réservation chez <strong>${data.restaurantName}</strong> est confirmée.</p>
+              <div class="booking-details">
+                <div class="detail-row"><span class="label">Numéro de confirmation :</span><span>${data.confirmationNumber}</span></div>
+                <div class="detail-row"><span class="label">Restaurant :</span><span>${data.restaurantName}</span></div>
+                <div class="detail-row"><span class="label">Date :</span><span>${displayDate}</span></div>
+                <div class="detail-row"><span class="label">Heure :</span><span>${data.time}</span></div>
+                <div class="detail-row"><span class="label">Nombre de personnes :</span><span>${data.partySize} personne${data.partySize > 1 ? 's' : ''}</span></div>
+              </div>
+              <p>Nous avons hâte de vous accueillir !</p>
+              <p><small>Pour modifier ou annuler votre réservation, contactez directement le restaurant.</small></p>
+            </div>
+            <div class="footer"><p>Propulsé par TableNow</p></div>
+          </div>
+        </body>
+        </html>
+      `,
+        });
+
+        console.log(`Booking confirmation sent to ${data.to}`);
     }
 
     /**
-     * Notification interne envoyée à l'équipe restaurant (alertes diverses).
-     * @param language Langue du restaurant (restaurants.language).
+     * Send notification to restaurant
      */
     async sendRestaurantNotification(data: {
         to: string;
         subject: string;
         message: string;
         bookingDetails?: any;
-        language?: SupportedLanguage;
     }): Promise<void> {
-        const language = data.language ?? 'fr';
-        const t = getTemplates(language).restaurantNotification;
-        const tplData = {
-            subject:        data.subject,
-            message:        data.message,
-            bookingDetails: data.bookingDetails,
-        };
+        const b = data.bookingDetails || {};
+        const bookingSummary = b && Object.keys(b).length > 0 ? `
+      <h4>Détails de la réservation</h4>
+      <ul style="padding-left:16px; line-height:1.6;">
+        ${b.guest_name    ? `<li><strong>Client :</strong> ${b.guest_name}</li>` : ''}
+        ${b.guest_email   ? `<li><strong>Email :</strong> ${b.guest_email}</li>` : ''}
+        ${b.guest_phone   ? `<li><strong>Téléphone :</strong> ${b.guest_phone}</li>` : ''}
+        ${b.booking_date  ? `<li><strong>Date :</strong> ${b.booking_date}</li>` : ''}
+        ${b.booking_time  ? `<li><strong>Heure :</strong> ${b.booking_time}</li>` : ''}
+        ${b.party_size    ? `<li><strong>Couverts :</strong> ${b.party_size}</li>` : ''}
+        ${b.special_requests ? `<li><strong>Demandes spéciales :</strong> ${b.special_requests}</li>` : ''}
+        ${b.confirmation_number ? `<li><strong>Confirmation n° :</strong> ${b.confirmation_number}</li>` : ''}
+        ${b.source        ? `<li><strong>Source :</strong> ${b.source}</li>` : ''}
+      </ul>
+    ` : '';
 
-        try {
-            await this.transporter.sendMail({
-                from:    this.fromAlertAddress,
-                to:      data.to,
-                subject: t.subject(tplData),
-                html:    t.html(tplData),
-            });
-            console.log(`Restaurant notification sent to ${data.to} via SMTP (lang=${language})`);
-        } catch (error: any) {
-            console.error('Error sending restaurant notification:', error.message);
-            throw error;
-        }
+        await this.transporter.sendMail({
+            from: `TableNow <${this.fromEmail}>`,
+            to: data.to,
+            subject: `TableNow — ${data.subject}`,
+            html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: #000; color: #fff; padding: 20px; text-align: center; }
+            .content { padding: 30px 20px; background: #f9f9f9; }
+            .alert { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
+            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header"><h1>TableNow</h1></div>
+            <div class="content">
+              <div class="alert">
+                <h3>${data.subject}</h3>
+                <p>${data.message}</p>
+              </div>
+              ${bookingSummary}
+              <p><small>Horodatage : ${new Date().toISOString()}</small></p>
+            </div>
+            <div class="footer"><p>© ${new Date().getFullYear()} TableNow. Tous droits réservés.</p></div>
+          </div>
+        </body>
+        </html>
+      `,
+        });
+
+        console.log(`Restaurant notification sent to ${data.to}`);
     }
 
     /**
-     * Parse un email entrant (BCC reçu depuis Zenchef ou SevenRooms) et
-     * extrait les détails de la réservation par regex sur le corps texte.
+     * Parse BCC email from Zenchef/SevenRooms
      */
     async parseBCCEmail(rawEmail: string): Promise<{
         type: 'new' | 'modification' | 'cancellation';
@@ -161,53 +222,40 @@ export class EmailService {
         confirmationNumber?: string;
         source: 'zenchef' | 'sevenrooms' | 'unknown';
     }> {
-        try {
-            const parsed = await simpleParser(rawEmail);
+        const parsed = await simpleParser(rawEmail);
 
-            const subject = parsed.subject || '';
-            const text = parsed.text || '';
+        const subject = parsed.subject || '';
+        const text = parsed.text || '';
 
-            let type: 'new' | 'modification' | 'cancellation' = 'new';
-            if (subject.toLowerCase().includes('cancel') || text.toLowerCase().includes('cancelled')) {
-                type = 'cancellation';
-            } else if (subject.toLowerCase().includes('modif') || subject.toLowerCase().includes('update')) {
-                type = 'modification';
-            }
-
-            let source: 'zenchef' | 'sevenrooms' | 'unknown' = 'unknown';
-            if (parsed.from?.text.toLowerCase().includes('zenchef')) {
-                source = 'zenchef';
-            } else if (parsed.from?.text.toLowerCase().includes('sevenrooms')) {
-                source = 'sevenrooms';
-            }
-
-            const emailRegex     = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
-            const phoneRegex     = /(\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/;
-            const dateRegex      = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
-            const timeRegex      = /(\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)?)/;
-            const partySizeRegex = /(\d+)\s*(?:guest|person|people|pax)/i;
-
-            return {
-                type,
-                source,
-                email:     text.match(emailRegex)?.[1],
-                phone:     text.match(phoneRegex)?.[1],
-                date:      text.match(dateRegex)?.[1],
-                time:      text.match(timeRegex)?.[1],
-                partySize: parseInt(text.match(partySizeRegex)?.[1] || '0'),
-                guestName: parsed.from?.text.split('<')[0].trim(),
-            };
-        } catch (error: any) {
-            console.error('Error parsing BCC email:', error.message);
-            throw error;
+        let type: 'new' | 'modification' | 'cancellation' = 'new';
+        if (subject.toLowerCase().includes('cancel') || text.toLowerCase().includes('cancelled')) {
+            type = 'cancellation';
+        } else if (subject.toLowerCase().includes('modif') || subject.toLowerCase().includes('update')) {
+            type = 'modification';
         }
+
+        let source: 'zenchef' | 'sevenrooms' | 'unknown' = 'unknown';
+        if (parsed.from?.text.toLowerCase().includes('zenchef')) source = 'zenchef';
+        else if (parsed.from?.text.toLowerCase().includes('sevenrooms')) source = 'sevenrooms';
+
+        const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
+        const phoneRegex = /(\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9})/;
+        const dateRegex = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/;
+        const timeRegex = /(\d{1,2}:\d{2}\s?(?:AM|PM|am|pm)?)/;
+        const partySizeRegex = /(\d+)\s*(?:guest|person|people|pax)/i;
+
+        return {
+            type,
+            source,
+            email: text.match(emailRegex)?.[1],
+            phone: text.match(phoneRegex)?.[1],
+            date: text.match(dateRegex)?.[1],
+            time: text.match(timeRegex)?.[1],
+            partySize: parseInt(text.match(partySizeRegex)?.[1] || '0'),
+            guestName: parsed.from?.text.split('<')[0].trim(),
+        };
     }
 
-    /**
-     * Envoi brut sans template (utilisé pour les BCC vers le PMS du
-     * restaurant — le contenu est composé en amont par l'appelant et reste
-     * libre).
-     */
     async sendRawEmail(options: {
         to: string | string[];
         subject: string;
@@ -215,7 +263,7 @@ export class EmailService {
         text?: string;
     }): Promise<void> {
         await this.transporter.sendMail({
-            from: this.fromAddress,
+            from: `TableNow <${this.fromEmail}>`,
             ...options,
         });
     }
