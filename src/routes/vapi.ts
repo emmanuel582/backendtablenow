@@ -648,6 +648,11 @@ async function handleAssistantRequest(event: any, res: Response) {
             model: {
                 systemPrompt: basePrompt + dynamicContext
             },
+            firstMessage: (() => {
+                const h = new Date().getHours();
+                const g = h < 18 ? 'Bonjour' : 'Bonsoir';
+                return `${g} et bienvenue chez ${restaurant.name}, comment puis-je vous aider ?`;
+            })(),
             variableValues: {
                 restaurantName: restaurant.name,
                 address: restaurant.address || '',

@@ -18,7 +18,7 @@ export class VapiService {
     private buildAssistantPayload(restaurantData: any): object {
         const serverUrl = this.getServerUrl();
         return {
-            name: `${restaurantData.name} — Clara`,
+            name: `${restaurantData.name} — TableNow`,
             transcriber: {
                 provider: 'deepgram',
                 model: 'nova-2',
@@ -38,7 +38,7 @@ export class VapiService {
                 voiceId: 'shimmer',
                 model: 'gpt-4o-mini-tts'
             },
-            firstMessage: 'Bonjour et bienvenue chez {{restaurantName}}, Clara à votre service — désirez-vous parler français ou anglais ?',
+            firstMessage: 'Bonjour et bienvenue, comment puis-je vous aider ?',
             endCallMessage: 'Bonne journée, au revoir !',
             serverUrl,
             silenceTimeoutSeconds: 12,
@@ -57,7 +57,7 @@ export class VapiService {
     }
 
     public generateSystemPrompt(): string {
-        return `You are Clara, the phone receptionist at {{restaurantName}}. Your only job is taking table reservations.
+        return `You are the AI receptionist at {{restaurantName}}, powered by TableNow. Your only job is taking table reservations.
 
 LANGUAGE — hard rule, no exceptions:
 The caller's very first intelligible word or sentence determines the language. Lock it immediately.
