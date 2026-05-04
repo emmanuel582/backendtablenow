@@ -42,55 +42,66 @@ export class EmailService {
     /**
      * Send verification email
      */
-    async sendVerificationEmail(to: string, verificationToken: string, restaurantName: string): Promise<void> {
+    async sendVerificationEmail(to: string, verificationToken: string, _restaurantName: string): Promise<void> {
         const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
         await this.transporter.sendMail({
             from: `TableNow <${this.fromEmail}>`,
             to,
             subject: 'Vérifiez votre compte TableNow',
-            html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: #000; color: #fff; padding: 20px; text-align: center; }
-            .content { padding: 30px 20px; background: #f9f9f9; }
-            .button { display: inline-block; padding: 12px 30px; background: #000; color: #fff; text-decoration: none; border-radius: 5px; margin: 20px 0; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header"><h1>TableNow</h1></div>
-            <div class="content">
-              <h2>Bienvenue sur TableNow, ${restaurantName} !</h2>
-              <p>Vous y êtes presque ! Vérifiez votre adresse e-mail pour activer votre compte.</p>
-              <p style="text-align: center;">
-                <a href="${verificationUrl}" class="button" target="_blank">Vérifier mon compte</a>
-              </p>
-              <p>Une fois vérifié, votre assistant IA sera configuré automatiquement.</p>
-              <p>Si le bouton ne fonctionne pas, copiez ce lien :</p>
-              <p style="word-break: break-all; color: #666;">${verificationUrl}</p>
-            </div>
-            <div class="footer"><p>© ${new Date().getFullYear()} TableNow. Tous droits réservés.</p></div>
-          </div>
-        </body>
-        </html>
-      `,
+            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:Arial,sans-serif">
+  <div style="max-width:560px;margin:40px auto;background:#0a0a0a;border-radius:12px;overflow:hidden">
+    <div style="padding:32px 32px 0;text-align:center">
+      <h1 style="font-size:28px;font-weight:700;color:#fff;margin:0">Table<span style="color:#b8f000">Now</span></h1>
+    </div>
+    <div style="padding:32px;background:#111;margin:24px;border-radius:12px;border:1px solid #1a1a1a">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:50%;border:2px solid #b8f000;background:#0a0a0a">
+          <span style="font-size:28px">✉</span>
+        </div>
+      </div>
+      <h2 style="font-size:22px;font-weight:700;color:#fff;margin:0 0 12px 0;text-align:center">Vérifiez votre email</h2>
+      <p style="font-size:14px;color:#888;text-align:center;margin:0 0 24px 0;line-height:1.6">
+        Un lien de vérification a été envoyé à<br>
+        <strong style="color:#fff">${to}</strong>
+      </p>
+      <p style="font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#555;margin:0 0 14px 0">UNE FOIS ACTIVÉ</p>
+      <div style="margin-bottom:24px">
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:8px 0">
+          <span style="color:#b8f000;font-size:14px;line-height:1.6;flex-shrink:0">●</span>
+          <span style="font-size:13px;color:#ccc;line-height:1.6">Votre assistant IA est configuré selon les standards de votre établissement</span>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:8px 0">
+          <span style="color:#b8f000;font-size:14px;line-height:1.6;flex-shrink:0">●</span>
+          <span style="font-size:13px;color:#ccc;line-height:1.6">Une ligne téléphonique dédiée vous est attribuée</span>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:8px 0">
+          <span style="color:#b8f000;font-size:14px;line-height:1.6;flex-shrink:0">●</span>
+          <span style="font-size:13px;color:#ccc;line-height:1.6">Une adresse BCC privée est créée pour centraliser vos réservations (zenchef, sevenrooms …)</span>
+        </div>
+      </div>
+      <a href="${verificationUrl}" style="display:block;background:#b8f000;color:#000;text-align:center;padding:14px;font-size:14px;font-weight:700;text-decoration:none;border-radius:8px;margin-bottom:20px">J'ai vérifié mon email →</a>
+      <p style="font-size:12px;color:#666;text-align:center;margin:0">Pas reçu ? Vérifiez vos spams ou <a href="${verificationUrl}" style="color:#b8f000;text-decoration:underline">renvoyez l'email</a></p>
+    </div>
+    <div style="padding:18px;background:#000;text-align:center;border-top:1px solid #1a1a1a">
+      <p style="font-size:11px;color:#555;margin:0">© 2026 TableNow. Tous droits réservés.</p>
+    </div>
+  </div>
+</body></html>`,
         });
 
         console.log(`Verification email sent to ${to}`);
     }
 
     /**
-     * Send booking confirmation email — fully in French
+     * Send booking confirmation email — template dark+lime validé
      */
     async sendBookingConfirmation(data: {
         to: string;
         restaurantName: string;
+        restaurantAddress?: string;
+        restaurantPhone?: string;
         guestName: string;
         date: string;
         time: string;
@@ -98,52 +109,52 @@ export class EmailService {
         confirmationNumber: string;
         language?: 'fr' | 'en';
     }): Promise<void> {
-        const lang = data.language === 'en' ? 'en' : 'fr';
-        // Format date as DD/MM/YYYY for display
-        const displayDate = data.date.split('-').reverse().join('/');
+        // Format confirmationNumber → TN-2026-XXXX
+        const rawNum = data.confirmationNumber || '';
+        const seq = rawNum.replace(/\D/g, '').slice(-4).padStart(4, '0');
+        const confirmationNumber = rawNum.startsWith('TN-') ? rawNum : `TN-2026-${seq}`;
+
+        // Format dateLong : "Samedi 3 mai 2026"
+        const [y, m, d] = data.date.split('-').map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        const dateLong = dateObj.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        const dateCapitalized = dateLong.charAt(0).toUpperCase() + dateLong.slice(1);
+
+        // Format time : "19h30"
+        const timeFmt = data.time.replace(':', 'h');
+
+        const restaurantAddress = data.restaurantAddress || '';
+        const restaurantPhone   = data.restaurantPhone   || '';
 
         await this.transporter.sendMail({
             from: `TableNow <${this.fromEmail}>`,
             to: data.to,
-            subject: lang === 'en'
-                ? `Booking confirmation — ${data.restaurantName}`
-                : `Confirmation de réservation — ${data.restaurantName}`,
-            html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: #000; color: #fff; padding: 20px; text-align: center; }
-            .content { padding: 30px 20px; background: #f9f9f9; }
-            .booking-details { background: #fff; padding: 20px; border-left: 4px solid #000; margin: 20px 0; }
-            .detail-row { padding: 10px 0; border-bottom: 1px solid #eee; }
-            .label { font-weight: bold; display: inline-block; width: 180px; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header"><h1>${lang === 'en' ? 'Booking confirmed' : 'Réservation confirmée'}</h1></div>
-            <div class="content">
-              <h2>${lang === 'en' ? `Hello ${data.guestName},` : `Bonjour ${data.guestName},`}</h2>
-              <p>${lang === 'en' ? `Your reservation at <strong>${data.restaurantName}</strong> is confirmed.` : `Votre réservation chez <strong>${data.restaurantName}</strong> est confirmée.`}</p>
-              <div class="booking-details">
-                <div class="detail-row"><span class="label">${lang === 'en' ? 'Confirmation #:' : 'Numéro de confirmation :'}</span><span>${data.confirmationNumber}</span></div>
-                <div class="detail-row"><span class="label">${lang === 'en' ? 'Restaurant:' : 'Restaurant :'}</span><span>${data.restaurantName}</span></div>
-                <div class="detail-row"><span class="label">${lang === 'en' ? 'Date:' : 'Date :'}</span><span>${displayDate}</span></div>
-                <div class="detail-row"><span class="label">${lang === 'en' ? 'Time:' : 'Heure :'}</span><span>${data.time}</span></div>
-                <div class="detail-row"><span class="label">${lang === 'en' ? 'Guests:' : 'Nombre de personnes :'}</span><span>${data.partySize} ${lang === 'en' ? `guest${data.partySize > 1 ? 's' : ''}` : `personne${data.partySize > 1 ? 's' : ''}`}</span></div>
-              </div>
-              <p>${lang === 'en' ? 'We look forward to welcoming you!' : 'Nous avons hâte de vous accueillir !'}</p>
-              <p><small>${lang === 'en' ? 'To modify or cancel, please contact the restaurant directly.' : 'Pour modifier ou annuler votre réservation, contactez directement le restaurant.'}</small></p>
-            </div>
-            <div class="footer"><p>${lang === 'en' ? 'Powered by TableNow' : 'Propulsé par TableNow'}</p></div>
-          </div>
-        </body>
-        </html>
-      `,
+            subject: `Réservation confirmée — ${data.restaurantName}`,
+            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:Arial,sans-serif">
+  <div style="max-width:560px;margin:40px auto;background:#0a0a0a;border-radius:12px;overflow:hidden">
+    <div style="padding:32px 32px 0;text-align:center">
+      <h1 style="font-size:24px;font-weight:700;color:#fff;margin:0">Table<span style="color:#b8f000">Now</span></h1>
+    </div>
+    <div style="padding:32px">
+      <h2 style="font-size:22px;font-weight:700;color:#fff;margin:0 0 8px 0">Réservation confirmée</h2>
+      <p style="font-size:14px;color:#ccc;margin:0 0 24px 0;line-height:1.7">Bonjour M. ${data.guestName},<br>Votre réservation chez <strong style="color:#fff">${data.restaurantName}</strong> est confirmée. Au plaisir de vous recevoir.</p>
+      <p style="font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#666;margin:0 0 14px 0">— Détails de votre réservation</p>
+      <div style="background:#111;border:1px solid #1a1a1a;border-radius:10px;margin-bottom:24px;overflow:hidden">
+        <div style="padding:12px 18px;border-bottom:1px solid #1a1a1a;display:flex"><span style="font-size:13px;font-weight:600;color:#888;width:170px;flex-shrink:0">N° de confirmation</span><span style="font-size:13px;color:#fff;font-family:monospace;font-weight:700">${confirmationNumber}</span></div>
+        <div style="padding:12px 18px;border-bottom:1px solid #1a1a1a;display:flex"><span style="font-size:13px;font-weight:600;color:#888;width:170px;flex-shrink:0">Restaurant</span><span style="font-size:13px;color:#fff">${data.restaurantName}${restaurantAddress ? `<br><span style="font-size:12px;color:#666">${restaurantAddress}</span>` : ''}</span></div>
+        <div style="padding:12px 18px;border-bottom:1px solid #1a1a1a;display:flex"><span style="font-size:13px;font-weight:600;color:#888;width:170px;flex-shrink:0">Date</span><span style="font-size:13px;color:#fff">${dateCapitalized}</span></div>
+        <div style="padding:12px 18px;border-bottom:1px solid #1a1a1a;display:flex;align-items:center"><span style="font-size:13px;font-weight:600;color:#888;width:170px;flex-shrink:0">Heure</span><span style="font-size:18px;font-weight:700;color:#b8f000">${timeFmt}</span></div>
+        <div style="padding:12px 18px;display:flex"><span style="font-size:13px;font-weight:600;color:#888;width:170px;flex-shrink:0">Nombre de personnes</span><span style="font-size:13px;color:#fff">${data.partySize} couverts</span></div>
+      </div>
+      <p style="font-size:12px;color:#888;margin:0 0 6px 0;line-height:1.6">Pour toute modification ou annulation, merci de contacter directement le restaurant :</p>
+      <p style="font-size:13px;color:#fff;font-weight:600;margin:0">${data.restaurantName}${restaurantPhone ? ` &nbsp;·&nbsp; ${restaurantPhone}` : ''}</p>
+    </div>
+    <div style="padding:18px;background:#000;text-align:center;border-top:1px solid #1a1a1a">
+      <p style="font-size:11px;color:#555;margin:0">© 2026 TableNow. Tous droits réservés.</p>
+    </div>
+  </div>
+</body></html>`,
         });
 
         console.log(`Booking confirmation sent to ${data.to}`);

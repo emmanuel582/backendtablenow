@@ -388,7 +388,10 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name, guestName,
+                        to: guestEmail, restaurantName: restaurant.name,
+                        restaurantAddress: restaurant.address || '',
+                        restaurantPhone: restaurant.phone || '',
+                        guestName,
                         date, time: normalizedTime, partySize: covers, confirmationNumber: booking.id,
                         language
                     });
@@ -903,7 +906,10 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name, guestName,
+                        to: guestEmail, restaurantName: restaurant.name,
+                        restaurantAddress: restaurant.address || '',
+                        restaurantPhone: restaurant.phone || '',
+                        guestName,
                         date, time: normalizedTime || time, partySize: covers, confirmationNumber: booking.id,
                         language
                     });

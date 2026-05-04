@@ -88,6 +88,8 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
             try {
                 await emailService.sendBookingConfirmation({
                     to: guestEmail, restaurantName: restaurant.name,
+                    restaurantAddress: restaurant.address || '',
+                    restaurantPhone: restaurant.phone || '',
                     guestName, date, time, partySize, confirmationNumber: booking.id,
                     language: guestLanguage
                 });

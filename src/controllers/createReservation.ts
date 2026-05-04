@@ -85,6 +85,8 @@ async function sendConfirmationEmail(restaurantData: any, reservation: any): Pro
     await emailService.sendBookingConfirmation({
         to: reservation.email,
         restaurantName: restaurantData.name,
+        restaurantAddress: restaurantData.address || '',
+        restaurantPhone: restaurantData.phone || '',
         guestName: `${reservation.first_name} ${reservation.last_name}`.trim(),
         date: reservation.date,
         time: reservation.time,
