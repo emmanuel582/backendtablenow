@@ -14,6 +14,7 @@ const SETTINGS_ALLOWLIST = new Set([
     'name', 'owner_name', 'phone', 'address', 'cuisine_type',
     'opening_hours', 'services', 'capacity', 'special_features',
     'faq_text', 'description', 'website', 'language',
+    'confirmation_email', 'cancellation_policy',
 ]);
 
 // ── GET /settings ─────────────────────────────────────────────────────────────

@@ -257,6 +257,66 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 });
 
+// ── Google OAuth ──────────────────────────────────────────────────────────────
+
+router.get('/google', (req: Request, res: Response) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const redirectUri = process.env.GOOGLE_AUTH_REDIRECT_URI || `${process.env.BACKEND_URL || 'https://api.tablenow.io'}/api/auth/google/callback`;
+    if (!clientId) return res.status(500).json({ error: 'Google OAuth not configured' });
+    const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: 'openid email profile',
+        access_type: 'offline',
+        prompt: 'select_account',
+    });
+    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+router.get('/google/callback', async (req: Request, res: Response) => {
+    const frontendUrl = process.env.FRONTEND_URL || 'https://app.tablenow.io';
+    const { code, error } = req.query as Record<string, string>;
+    if (error || !code) return res.redirect(`${frontendUrl}/login?error=google_cancelled`);
+    try {
+        const clientId     = process.env.GOOGLE_CLIENT_ID!;
+        const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
+        const redirectUri  = process.env.GOOGLE_AUTH_REDIRECT_URI || `${process.env.BACKEND_URL || 'https://api.tablenow.io'}/api/auth/google/callback`;
+        // Exchange code for tokens
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
+        });
+        const tokens = await tokenRes.json() as any;
+        if (!tokens.access_token) return res.redirect(`${frontendUrl}/login?error=google_token`);
+        // Get user info
+        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: { Authorization: `Bearer ${tokens.access_token}` },
+        });
+        const googleUser = await userRes.json() as any;
+        if (!googleUser.email) return res.redirect(`${frontendUrl}/login?error=google_userinfo`);
+        // Find or create restaurant
+        let { data: restaurant } = await supabase.from('restaurants').select('*').eq('email', googleUser.email).single();
+        if (!restaurant) {
+            const { data: newRest } = await supabase.from('restaurants').insert({
+                email: googleUser.email,
+                name: googleUser.name || googleUser.email.split('@')[0],
+                owner_name: googleUser.name || '',
+                email_verified: true,
+                google_id: googleUser.id,
+            }).select().single();
+            restaurant = newRest;
+        }
+        if (!restaurant) return res.redirect(`${frontendUrl}/login?error=db_error`);
+        const token = jwt.sign({ restaurantId: restaurant.id, email: restaurant.email }, process.env.JWT_SECRET!, { expiresIn: '30d' });
+        res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+    } catch (err: any) {
+        logger.error({ err }, 'Google OAuth callback error');
+        res.redirect(`${frontendUrl}/login?error=google_error`);
+    }
+});
+
 // ── Get current user ──────────────────────────────────────────────────────────
 
 router.get('/me', async (req: Request, res: Response) => {
