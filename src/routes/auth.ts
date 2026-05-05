@@ -257,63 +257,66 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 });
 
-// ── Google OAuth ──────────────────────────────────────────────────────────────
+// ── Google OAuth via Supabase ─────────────────────────────────────────────────
 
 router.get('/google', (req: Request, res: Response) => {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const redirectUri = process.env.GOOGLE_AUTH_REDIRECT_URI || `${process.env.BACKEND_URL || 'https://api.tablenow.io'}/api/auth/google/callback`;
-    if (!clientId) return res.status(500).json({ error: 'Google OAuth not configured' });
+    const supabaseUrl = process.env.SUPABASE_URL!;
+    const redirectTo = `${process.env.FRONTEND_URL || 'https://app.tablenow.io'}/auth/callback`;
     const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-        scope: 'openid email profile',
-        access_type: 'offline',
-        prompt: 'select_account',
+        provider: 'google',
+        redirect_to: redirectTo,
     });
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+    res.redirect(`${supabaseUrl}/auth/v1/authorize?${params}`);
 });
 
 router.get('/google/callback', async (req: Request, res: Response) => {
+    // Supabase gère le callback directement — cette route sert de fallback
     const frontendUrl = process.env.FRONTEND_URL || 'https://app.tablenow.io';
-    const { code, error } = req.query as Record<string, string>;
-    if (error || !code) return res.redirect(`${frontendUrl}/login?error=google_cancelled`);
+    res.redirect(`${frontendUrl}/auth/callback`);
+});
+
+// ── Supabase Google OAuth token exchange ──────────────────────────────────────
+router.post('/google/supabase', async (req: Request, res: Response) => {
+    const { access_token } = req.body;
+    if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
     try {
-        const clientId     = process.env.GOOGLE_CLIENT_ID!;
-        const clientSecret = process.env.GOOGLE_CLIENT_SECRET!;
-        const redirectUri  = process.env.GOOGLE_AUTH_REDIRECT_URI || `${process.env.BACKEND_URL || 'https://api.tablenow.io'}/api/auth/google/callback`;
-        // Exchange code for tokens
-        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
+        // Vérifier le token Supabase et récupérer l'utilisateur
+        const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
+            headers: {
+                'Authorization': `Bearer ${access_token}`,
+                'apikey': process.env.SUPABASE_ANON_KEY!,
+            },
         });
-        const tokens = await tokenRes.json() as any;
-        if (!tokens.access_token) return res.redirect(`${frontendUrl}/login?error=google_token`);
-        // Get user info
-        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-            headers: { Authorization: `Bearer ${tokens.access_token}` },
-        });
-        const googleUser = await userRes.json() as any;
-        if (!googleUser.email) return res.redirect(`${frontendUrl}/login?error=google_userinfo`);
-        // Find or create restaurant
-        let { data: restaurant } = await supabase.from('restaurants').select('*').eq('email', googleUser.email).single();
+        if (!userRes.ok) return res.status(401).json({ error: 'Invalid Supabase token' });
+        const supabaseUser = await userRes.json() as any;
+        const email = supabaseUser.email;
+        if (!email) return res.status(400).json({ error: 'No email in token' });
+
+        // Trouver ou créer le restaurant
+        let { data: restaurant } = await supabase.from('restaurants').select('*').eq('email', email).single();
         if (!restaurant) {
+            const name = supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || email.split('@')[0];
             const { data: newRest } = await supabase.from('restaurants').insert({
-                email: googleUser.email,
-                name: googleUser.name || googleUser.email.split('@')[0],
-                owner_name: googleUser.name || '',
+                email,
+                name,
+                owner_name: name,
                 email_verified: true,
-                google_id: googleUser.id,
+                google_id: supabaseUser.id,
+                slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
             }).select().single();
             restaurant = newRest;
         }
-        if (!restaurant) return res.redirect(`${frontendUrl}/login?error=db_error`);
-        const token = jwt.sign({ restaurantId: restaurant.id, email: restaurant.email }, process.env.JWT_SECRET!, { expiresIn: '30d' });
-        res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
+        if (!restaurant) return res.status(500).json({ error: 'Could not create restaurant' });
+
+        const token = jwt.sign(
+            { restaurantId: restaurant.id, email: restaurant.email },
+            process.env.JWT_SECRET!,
+            { expiresIn: '30d' }
+        );
+        res.json({ token, restaurant });
     } catch (err: any) {
-        logger.error({ err }, 'Google OAuth callback error');
-        res.redirect(`${frontendUrl}/login?error=google_error`);
+        logger.error({ err }, 'Supabase token exchange error');
+        res.status(500).json({ error: 'Internal error' });
     }
 });
 
