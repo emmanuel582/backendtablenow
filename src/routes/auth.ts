@@ -296,16 +296,18 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
         // Trouver ou créer le restaurant
+        // Chercher le restaurant — utiliser mayfail car plusieurs résultats possibles
         logger.info({ email }, 'Looking up restaurant by email');
-        let { data: restaurant, error: dbError } = await supabase.from('restaurants').select('*').eq('email', email).single();
-        logger.info({ found: !!restaurant, dbError: dbError?.message }, 'DB lookup');
+        const { data: restaurants } = await supabase.from('restaurants').select('*').eq('email', email).limit(1);
+        let restaurant: any = restaurants?.[0] || null;
+        logger.info({ found: !!restaurant }, 'DB lookup');
 
         if (!restaurant) {
             const name = supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || email.split('@')[0];
             const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${Date.now().toString(36)}`;
             logger.info({ name, slug }, 'Creating restaurant');
             const { data: newRest, error: insertErr } = await supabase.from('restaurants').insert({
-                email, name, owner_name: name, email_verified: true,
+                email, name, owner_name: name,
                 google_id: supabaseUser.id, slug,
             }).select().single();
             logger.info({ created: !!newRest, insertErr: insertErr?.message }, 'Insert result');
