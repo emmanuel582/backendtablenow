@@ -296,29 +296,36 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
         // Trouver ou créer le restaurant
-        let { data: restaurant } = await supabase.from('restaurants').select('*').eq('email', email).single();
+        logger.info({ email }, 'Looking up restaurant by email');
+        let { data: restaurant, error: dbError } = await supabase.from('restaurants').select('*').eq('email', email).single();
+        logger.info({ found: !!restaurant, dbError: dbError?.message }, 'DB lookup');
+
         if (!restaurant) {
             const name = supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || email.split('@')[0];
             const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${Date.now().toString(36)}`;
-            const { data: newRest } = await supabase.from('restaurants').insert({
+            logger.info({ name, slug }, 'Creating restaurant');
+            const { data: newRest, error: insertErr } = await supabase.from('restaurants').insert({
                 email, name, owner_name: name, email_verified: true,
                 google_id: supabaseUser.id, slug,
             }).select().single();
+            logger.info({ created: !!newRest, insertErr: insertErr?.message }, 'Insert result');
+            if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
             restaurant = newRest;
         } else if (!restaurant.slug) {
-            // Restaurant existant sans slug — en générer un
             const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${restaurant.id.slice(0,8)}`;
             await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
             restaurant = { ...restaurant, slug };
         }
-        if (!restaurant) return res.status(500).json({ error: 'Could not create restaurant' });
+        if (!restaurant) return res.status(500).json({ error: 'Could not find or create restaurant' });
 
+        logger.info({ id: restaurant.id, slug: restaurant.slug }, 'Signing token');
+        const { password: _pw, ...safeRest } = restaurant as any;
         const token = jwt.sign(
             { restaurantId: restaurant.id, email: restaurant.email },
             process.env.JWT_SECRET!,
             { expiresIn: '30d' }
         );
-        res.json({ token, restaurant });
+        res.json({ token, restaurant: safeRest });
     } catch (err: any) {
         logger.error({ err: err?.message || err, stack: err?.stack?.slice(0,200) }, 'Supabase token exchange error');
         res.status(500).json({ error: 'Internal error', detail: err?.message });
