@@ -296,15 +296,17 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         let { data: restaurant } = await supabase.from('restaurants').select('*').eq('email', email).single();
         if (!restaurant) {
             const name = supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || email.split('@')[0];
+            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${Date.now().toString(36)}`;
             const { data: newRest } = await supabase.from('restaurants').insert({
-                email,
-                name,
-                owner_name: name,
-                email_verified: true,
-                google_id: supabaseUser.id,
-                slug: name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+                email, name, owner_name: name, email_verified: true,
+                google_id: supabaseUser.id, slug,
             }).select().single();
             restaurant = newRest;
+        } else if (!restaurant.slug) {
+            // Restaurant existant sans slug — en générer un
+            const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${restaurant.id.slice(0,8)}`;
+            await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
+            restaurant = { ...restaurant, slug };
         }
         if (!restaurant) return res.status(500).json({ error: 'Could not create restaurant' });
 
