@@ -280,15 +280,18 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
     const { access_token } = req.body;
     if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
     try {
-        // Vérifier le token Supabase et récupérer l'utilisateur
+        // Vérifier le token Supabase — fonctionne avec JWT et tokens opaques
         const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
             headers: {
                 'Authorization': `Bearer ${access_token}`,
                 'apikey': process.env.SUPABASE_ANON_KEY!,
+                'Content-Type': 'application/json',
             },
         });
-        if (!userRes.ok) return res.status(401).json({ error: 'Invalid Supabase token' });
-        const supabaseUser = await userRes.json() as any;
+        const userBody = await userRes.json() as any;
+        logger.info({ status: userRes.status, email: userBody?.email, error: userBody?.error }, 'Supabase user fetch');
+        if (!userRes.ok) return res.status(401).json({ error: 'Invalid Supabase token', detail: userBody });
+        const supabaseUser = userBody;
         const email = supabaseUser.email;
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
@@ -317,8 +320,8 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         );
         res.json({ token, restaurant });
     } catch (err: any) {
-        logger.error({ err }, 'Supabase token exchange error');
-        res.status(500).json({ error: 'Internal error' });
+        logger.error({ err: err?.message || err, stack: err?.stack?.slice(0,200) }, 'Supabase token exchange error');
+        res.status(500).json({ error: 'Internal error', detail: err?.message });
     }
 });
 
