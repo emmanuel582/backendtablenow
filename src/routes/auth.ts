@@ -149,7 +149,9 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
 
-        // Already verified — still return a JWT so the user can auto-login
+        const { password: _, verification_token: __, ...restaurantData } = restaurant;
+
+        // Already verified — still return JWT + restaurant so the user can auto-login
         if (restaurant.is_verified) {
             const jwtToken = jwt.sign(
                 { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
@@ -159,6 +161,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             return res.json({
                 message: 'Email already verified.',
                 token: jwtToken,
+                restaurant: restaurantData,
                 status: restaurant.status,
             });
         }
@@ -203,7 +206,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             }
         });
 
-        // Return JWT immediately so the frontend can auto-login → /onboarding
+        // Return JWT + restaurant immediately → frontend can auto-login without /me round-trip
         const jwtToken = jwt.sign(
             { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
             process.env.JWT_SECRET!,
@@ -213,6 +216,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         res.json({
             message: 'Email vérifié ! Bienvenue dans TableNow.',
             token: jwtToken,
+            restaurant: { ...restaurantData, is_verified: true, status: 'provisioning' },
             status: 'provisioning',
         });
     } catch (error: any) {
