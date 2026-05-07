@@ -9,12 +9,9 @@ import emailService from '../services/email.service';
 import ragService from '../services/rag.service';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
+import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 
 const router = Router();
-
-function generateSlug(name: string): string {
-    return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-}
 
 // ── Multer ────────────────────────────────────────────────────────────────────────────────
 
@@ -53,17 +50,21 @@ router.post('/register', upload.fields([
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        const { data: existingUser } = await supabase
-            .from('restaurants').select('id').eq('email', email).single();
-        if (existingUser) return res.status(409).json({ error: 'Email already registered' });
+        const { data: existingUser, error: emailError } = await safeSingle(
+            supabase.from('restaurants').select('id').eq('email', email),
+            'register: check email'
+        );
+        if (emailError || existingUser) return res.status(409).json({ error: 'Email already registered' });
 
         const hashedPassword    = await bcrypt.hash(password, 10);
         const verificationToken = uuidv4();
 
-        let slug = generateSlug(restaurantName);
-        const { data: existingSlug } = await supabase
-            .from('restaurants').select('id').eq('slug', slug).single();
-        if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+        let slug = generateUniqueSlug(restaurantName);
+        const { data: existingSlug, isDuplicate: slugExists } = await safeSingle(
+            supabase.from('restaurants').select('id').eq('slug', slug),
+            'register: check slug'
+        );
+        if (existingSlug || slugExists) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
 
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
         const documents: Record<string, string> = {};
@@ -144,8 +145,10 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         const { token } = req.body;
         if (!token) return res.status(400).json({ error: 'Verification token required' });
 
-        const { data: restaurant, error: findError } = await supabase
-            .from('restaurants').select('*').eq('verification_token', token).single();
+        const { data: restaurant, error: findError } = await safeSingle(
+            supabase.from('restaurants').select('*').eq('verification_token', token),
+            'verify-email: find token'
+        );
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
 
@@ -232,8 +235,10 @@ router.post('/login', async (req: Request, res: Response) => {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const { data: restaurant, error: findError } = await supabase
-            .from('restaurants').select('*').eq('email', email).single();
+        const { data: restaurant, error: findError } = await safeSingle(
+            supabase.from('restaurants').select('*').eq('email', email),
+            'login: find by email'
+        );
         if (findError || !restaurant) return res.status(401).json({ error: 'Invalid credentials' });
         if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
 
@@ -292,40 +297,50 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const googlePhoto = userBody.user_metadata?.avatar_url || userBody.user_metadata?.picture || null;
         const googleId = userBody.id;
 
-        const { data: restaurants } = await supabase
-            .from('restaurants').select('*').eq('email', email).limit(1);
-        let restaurant: any = restaurants?.[0] || null;
+        const { data: restaurant, error: lookupError } = await safeSingle(
+            supabase.from('restaurants').select('*').eq('email', email),
+            'google/supabase: find by email'
+        );
+        if (lookupError) return res.status(500).json({ error: 'Database error', detail: lookupError });
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
             const name = googleName;
-            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-                || `resto-${Date.now().toString(36)}`;
+            let slug = generateUniqueSlug(name);
+
+            const { data: existingSlug, isDuplicate } = await safeSingle(
+                supabase.from('restaurants').select('id').eq('slug', slug),
+                'google/supabase: check slug'
+            );
+            if (existingSlug || isDuplicate) {
+                slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
+            }
+
             logger.info({ name, slug, email }, 'Creating restaurant from Google OAuth');
             const { data: newRest, error: insertErr } = await supabase
                 .from('restaurants')
                 .insert({ email, name, owner_name: name, google_id: googleId, slug })
                 .select().single();
             if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
-            restaurant = newRest;
+            const createdRestaurant = newRest;
 
             // Provision VAPI asynchronously for new restaurants
             setImmediate(async () => {
                 try {
-                    await provisioningService.provision(restaurant);
+                    await provisioningService.provision(createdRestaurant);
                 } catch (vapiErr) {
-                    logger.error({ vapiErr, restaurantId: restaurant.id }, '❌ VAPI provisioning error');
-                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
+                    logger.error({ vapiErr, restaurantId: createdRestaurant.id }, '❌ VAPI provisioning error');
+                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', createdRestaurant.id);
                 }
             });
 
-            const { password: _pw, ...safeRest } = restaurant as any;
+            const { password: _pw, ...safeRest } = createdRestaurant as any;
             const token = jwt.sign(
-                { restaurantId: restaurant.id, email: restaurant.email },
+                { id: createdRestaurant.id, email: createdRestaurant.email, restaurantId: createdRestaurant.id },
                 process.env.JWT_SECRET!,
                 { expiresIn: '30d' }
             );
-            logger.info({ id: restaurant.id, slug: restaurant.slug }, 'New user auto-provisioning');
+            logger.info({ id: createdRestaurant.id, slug: createdRestaurant.slug }, 'New user auto-provisioning');
             return res.json({
                 token,
                 restaurant: safeRest,
@@ -335,8 +350,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         }
 
         if (!restaurant.slug) {
-            const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-                || `resto-${restaurant.id.slice(0, 8)}`;
+            const slug = generateUniqueSlug(restaurant.name);
             await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
             restaurant = { ...restaurant, slug };
         }
@@ -347,7 +361,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         logger.info({ id: restaurant.id, slug: restaurant.slug }, 'Existing user login');
         const { password: _pw, ...safeRest } = restaurant as any;
         const token = jwt.sign(
-            { restaurantId: restaurant.id, email: restaurant.email },
+            { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
             process.env.JWT_SECRET!,
             { expiresIn: '30d' }
         );
@@ -371,9 +385,11 @@ router.get('/me', async (req: Request, res: Response) => {
         if (!token) return res.status(401).json({ error: 'Access token required' });
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-        const { data: restaurant, error } = await supabase
-            .from('restaurants').select('*').eq('id', decoded.restaurantId).single();
-        if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+        const { data: restaurant, error: findError } = await safeSingle(
+            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id),
+            'me: find by id'
+        );
+        if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         const { password: _, ...restaurantData } = restaurant;
         res.json({ restaurant: restaurantData });
