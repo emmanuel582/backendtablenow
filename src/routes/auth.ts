@@ -9,6 +9,7 @@ import emailService from '../services/email.service';
 import ragService from '../services/rag.service';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
+import { ValidationError } from '../lib/errors';
 import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { validate } from '../middleware/handlers';
 import { RegisterSchema, LoginSchema, VerifyEmailSchema, GoogleSubpabaseSchema } from '../types/schemas';
@@ -37,19 +38,25 @@ const upload = multer({
 
 // ── Register ─────────────────────────────────────────────────────────────────────────────
 
-router.post('/register', validate(RegisterSchema), upload.fields([
+router.post('/register', upload.fields([
     { name: 'menu',     maxCount: 1 },
     { name: 'faq',      maxCount: 1 },
     { name: 'policies', maxCount: 1 },
 ]), async (req: Request, res: Response, next) => {
     try {
+        // Validate required fields
+        const result = RegisterSchema.safeParse(req.body);
+        if (!result.success) {
+            return next(new ValidationError('Validation failed', result.error.errors.map(e => ({ field: e.path.join('.'), message: e.message }))));
+        }
+
         const {
             email, password, restaurantName, ownerName,
             phone, address, cuisineType, openingHours, specialFeatures, faqText,
-        } = req.body;
+        } = result.data as any;
 
         const existingUser = await safeSingle(
-            supabase.from('restaurants').select('id').eq('email', email),
+            supabase.from('restaurants').select('id').eq('email', email) as unknown as Promise<{ data: any[] | null; error: any }>,
             'register: check email'
         );
         if (existingUser) return res.status(409).json({ error: 'Email already registered' });
@@ -59,7 +66,7 @@ router.post('/register', validate(RegisterSchema), upload.fields([
 
         let slug = generateUniqueSlug(restaurantName);
         const existingSlug = await safeSingle(
-            supabase.from('restaurants').select('id').eq('slug', slug),
+            supabase.from('restaurants').select('id').eq('slug', slug) as unknown as Promise<{ data: any[] | null; error: any }>,
             'register: check slug'
         );
         if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
@@ -143,7 +150,7 @@ router.post('/verify-email', validate(VerifyEmailSchema), async (req: Request, r
         const { token } = req.body;
 
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('verification_token', token),
+            supabase.from('restaurants').select('*').eq('verification_token', token) as unknown as Promise<{ data: any[] | null; error: any }>,
             'verify-email: find token'
         );
 
@@ -232,7 +239,7 @@ router.post('/login', validate(LoginSchema), async (req: Request, res: Response,
         const { email, password } = req.body;
 
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
+            supabase.from('restaurants').select('*').eq('email', email) as unknown as Promise<{ data: any[] | null; error: any }>,
             'login: find by email'
         );
         if (!restaurant) return res.status(401).json({ error: 'Invalid credentials' });
@@ -292,8 +299,8 @@ router.post('/google/supabase', validate(GoogleSubpabaseSchema), async (req: Req
         const googlePhoto = userBody.user_metadata?.avatar_url || userBody.user_metadata?.picture || null;
         const googleId = userBody.id;
 
-        const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
+        let restaurant = await safeSingle(
+            supabase.from('restaurants').select('*').eq('email', email) as unknown as Promise<{ data: any[] | null; error: any }>,
             'google/supabase: find by email'
         );
         logger.info({ found: !!restaurant, email }, 'DB lookup');
@@ -303,7 +310,7 @@ router.post('/google/supabase', validate(GoogleSubpabaseSchema), async (req: Req
             let slug = generateUniqueSlug(name);
 
             const existingSlug = await safeSingle(
-                supabase.from('restaurants').select('id').eq('slug', slug),
+                supabase.from('restaurants').select('id').eq('slug', slug) as unknown as Promise<{ data: any[] | null; error: any }>,
                 'google/supabase: check slug'
             );
             if (existingSlug) {
@@ -380,7 +387,7 @@ router.get('/me', async (req: Request, res: Response, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id),
+            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id) as unknown as Promise<{ data: any[] | null; error: any }>,
             'me: find by id'
         );
         if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
