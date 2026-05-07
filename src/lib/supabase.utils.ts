@@ -1,54 +1,32 @@
 import logger from './logger';
 
 /**
- * Safe wrapper for .single() queries
- * Differentiates between 0 rows (normal) and multiple rows (corruption)
+ * Safe wrapper for Supabase single-row queries
+ * Accepts a query builder, executes with .maybeSingle(), handles edge cases
+ *
+ * Usage: await safeSingle(supabase.from('users').select('*').eq('id', id), 'context')
  *
  * Returns: T | null if successful
- * Throws: if multiple rows found (data integrity violation) or unexpected error
+ * Throws: on error or if multiple rows found (data integrity violation)
  */
-export async function safeSingle<T>(
-  query: Promise<{ data: T[] | null; error: any }>,
+export async function safeSingle<T = any>(
+  query: any, // PostgrestBuilder (from supabase.from(...).select(...))
   context: string
 ): Promise<T | null> {
   try {
-    const { data, error } = await query;
+    // Execute with maybeSingle() to safely handle 0 or 1 row
+    const { data, error } = await query.maybeSingle();
 
-    // PGRST116 = 0 rows returned (normal case)
-    if (error?.code === 'PGRST116') {
-      return null;
-    }
-
-    // Any other error → throw (connection issue, permission, etc)
+    // Any error → throw (connection issue, permission, FK violation, etc)
     if (error) {
       logger.error({ context, error: error.message, code: error.code }, '❌ Database query error');
       throw error;
     }
 
-    // No data = no rows (shouldn't happen with error check above, but defensive)
-    if (!data || data.length === 0) {
-      return null;
-    }
-
-    // Multiple rows = data integrity violation → MUST throw, never silently return
-    if (data.length > 1) {
-      logger.error(
-        { context, rowCount: data.length },
-        '🚨 CRITICAL: Data integrity violation — multiple rows returned by single() query'
-      );
-      throw new Error(
-        `Data integrity violation: expected 0 or 1 row, got ${data.length} rows (${context})`
-      );
-    }
-
-    // Exactly 1 row → success
-    return data[0];
+    // 0 or 1 row (success cases)
+    return data || null;
   } catch (err: any) {
-    // Re-throw if already our error, otherwise wrap
-    if (err?.message?.includes('Data integrity violation')) {
-      throw err;
-    }
-    logger.error({ context, error: err?.message }, '❌ Unexpected error in safeSingle');
+    logger.error({ context, error: err?.message }, '❌ Error in safeSingle');
     throw err;
   }
 }
