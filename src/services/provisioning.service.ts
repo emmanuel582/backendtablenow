@@ -107,6 +107,8 @@ export class ProvisioningService {
                     .eq('id', restaurant.id);
                 log.info({ assistantId: assistant.id }, '✅ Rollback complete — no orphan on VAPI');
             } catch (rollbackErr: any) {
+                // Worst case: VAPI assistant exists but isn't linked.
+                // Logged with full context so ops can manually clean up.
                 log.error(
                     { assistantId: assistant.id, rollbackErr: rollbackErr.message },
                     '❌ Rollback failed — VAPI assistant may be orphaned, manual cleanup required'
