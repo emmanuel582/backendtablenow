@@ -93,7 +93,22 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
                     guestName, date, time, partySize, confirmationNumber: booking.id,
                     language: guestLanguage
                 });
-            } catch (e) { log.warn({ err: e }, 'Confirmation email failed'); }
+            } catch (e) { log.warn({ err: e }, 'Guest confirmation email failed'); }
+
+            if (restaurant.confirmation_email) {
+                try {
+                    await emailService.sendRestaurantNotification({
+                        to: restaurant.confirmation_email,
+                        subject: `Nouvelle réservation — ${guestName}`,
+                        message: `Une réservation manuelle vient d'être enregistrée depuis le dashboard.`,
+                        bookingDetails: {
+                            guest_name: guestName, guest_phone: guestPhone || null, guest_email: guestEmail,
+                            booking_date: date, booking_time: time, party_size: partySize,
+                            confirmation_number: booking.id, source: 'manual'
+                        }
+                    });
+                } catch (e) { log.warn({ err: e }, 'Restaurant notification failed'); }
+            }
 
             if (restaurant.google_calendar_tokens) {
                 try {

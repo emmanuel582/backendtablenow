@@ -396,7 +396,25 @@ router.post('/create-booking', async (req: Request, res: Response) => {
                         language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create-booking] Email:', err.message); }
+                } catch (err: any) { console.error('[create-booking] Guest email:', err.message); }
+            });
+        }
+
+        // Non-blocking: Restaurant notification
+        if (restaurant.confirmation_email) {
+            setImmediate(async () => {
+                try {
+                    await emailService.sendRestaurantNotification({
+                        to: restaurant.confirmation_email,
+                        subject: `Nouvelle réservation — ${guestName}`,
+                        message: `Une réservation téléphonique vient d'être enregistrée.`,
+                        bookingDetails: {
+                            guest_name: guestName, guest_phone: guestPhone, guest_email: guestEmail || null,
+                            booking_date: date, booking_time: normalizedTime, party_size: covers,
+                            confirmation_number: booking.id, source: 'phone'
+                        }
+                    });
+                } catch (err: any) { console.error('[create-booking] Restaurant notification:', err.message); }
             });
         }
 
@@ -914,7 +932,25 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
                         language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create_booking] Email:', err.message); }
+                } catch (err: any) { console.error('[create_booking] Guest email:', err.message); }
+            });
+        }
+
+        // Non-blocking: Restaurant notification
+        if (restaurant.confirmation_email) {
+            setImmediate(async () => {
+                try {
+                    await emailService.sendRestaurantNotification({
+                        to: restaurant.confirmation_email,
+                        subject: `Nouvelle réservation — ${guestName}`,
+                        message: `Une réservation téléphonique vient d'être enregistrée.`,
+                        bookingDetails: {
+                            guest_name: guestName, guest_phone: guestPhone, guest_email: guestEmail || null,
+                            booking_date: date, booking_time: normalizedTime || time, party_size: covers,
+                            confirmation_number: booking.id, source: 'vapi'
+                        }
+                    });
+                } catch (err: any) { console.error('[create_booking] Restaurant notification:', err.message); }
             });
         }
 
