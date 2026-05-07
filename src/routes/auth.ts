@@ -56,8 +56,7 @@ router.post('/register', upload.fields([
         } = result.data as any;
 
         const existingUser = await safeSingle(
-            supabase.from('restaurants').select('id').eq('email', email),
-            'register: check email'
+            supabase.from('restaurants').select('id').eq('email', email).maybeSingle()
         );
         if (existingUser) return res.status(409).json({ error: 'Email already registered' });
 
@@ -66,8 +65,7 @@ router.post('/register', upload.fields([
 
         let slug = generateUniqueSlug(restaurantName);
         const existingSlug = await safeSingle(
-            supabase.from('restaurants').select('id').eq('slug', slug),
-            'register: check slug'
+            supabase.from('restaurants').select('id').eq('slug', slug).maybeSingle()
         );
         if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
 
@@ -150,8 +148,7 @@ router.post('/verify-email', validate(VerifyEmailSchema), async (req: Request, r
         const { token } = req.body;
 
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('verification_token', token),
-            'verify-email: find token'
+            supabase.from('restaurants').select('*').eq('verification_token', token).maybeSingle()
         );
 
         if (!restaurant) return res.status(404).json({ error: 'Invalid verification token' });
@@ -239,8 +236,7 @@ router.post('/login', validate(LoginSchema), async (req: Request, res: Response,
         const { email, password } = req.body;
 
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
-            'login: find by email'
+            supabase.from('restaurants').select('*').eq('email', email).maybeSingle()
         );
         if (!restaurant) return res.status(401).json({ error: 'Invalid credentials' });
         if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
@@ -300,8 +296,7 @@ router.post('/google/supabase', validate(GoogleSubpabaseSchema), async (req: Req
         const googleId = userBody.id;
 
         let restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
-            'google/supabase: find by email'
+            supabase.from('restaurants').select('*').eq('email', email).maybeSingle()
         );
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
@@ -310,8 +305,7 @@ router.post('/google/supabase', validate(GoogleSubpabaseSchema), async (req: Req
             let slug = generateUniqueSlug(name);
 
             const existingSlug = await safeSingle(
-                supabase.from('restaurants').select('id').eq('slug', slug),
-                'google/supabase: check slug'
+                supabase.from('restaurants').select('id').eq('slug', slug).maybeSingle()
             );
             if (existingSlug) {
                 slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
@@ -387,8 +381,7 @@ router.get('/me', async (req: Request, res: Response, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
         const restaurant = await safeSingle(
-            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id),
-            'me: find by id'
+            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id).maybeSingle()
         );
         if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 

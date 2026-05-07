@@ -1,34 +1,24 @@
-import logger from './logger';
+import type { PostgrestSingleResponse } from '@supabase/supabase-js';
 
 /**
  * Safe wrapper for Supabase single-row queries
- * Accepts a query builder, executes with .maybeSingle(), handles edge cases
+ * Expects a builder with .maybeSingle() already called
  *
- * Usage: await safeSingle(supabase.from('users').select('*').eq('id', id), 'context')
+ * Usage: await safeSingle(supabase.from('users').select('*').eq('id', id).maybeSingle())
  *
  * Returns: T | null if successful
- * Throws: on error or if multiple rows found (data integrity violation)
+ * Throws: on database error
  */
-export async function safeSingle<T = any>(
-  query: any, // PostgrestBuilder (from supabase.from(...).select(...))
-  context: string
+export async function safeSingle<T>(
+  query: PromiseLike<PostgrestSingleResponse<T>>
 ): Promise<T | null> {
-  try {
-    // Execute with maybeSingle() to safely handle 0 or 1 row
-    const { data, error } = await query.maybeSingle();
+  const { data, error } = await query;
 
-    // Any error → throw (connection issue, permission, FK violation, etc)
-    if (error) {
-      logger.error({ context, error: error.message, code: error.code }, '❌ Database query error');
-      throw error;
-    }
-
-    // 0 or 1 row (success cases)
-    return data || null;
-  } catch (err: any) {
-    logger.error({ context, error: err?.message }, '❌ Error in safeSingle');
-    throw err;
+  if (error) {
+    throw error;
   }
+
+  return data ?? null;
 }
 
 export function generateUniqueSlug(name: string): string {
