@@ -291,6 +291,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const { data: restaurants } = await supabase
             .from('restaurants').select('*').eq('email', email).limit(1);
         let restaurant: any = restaurants?.[0] || null;
+        let isNewUser = false;
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
@@ -303,6 +304,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
                 .select().single();
             if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
             restaurant = newRest;
+            isNewUser = true;
         } else if (!restaurant.slug) {
             const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
                 || `resto-${restaurant.id.slice(0, 8)}`;
@@ -312,13 +314,14 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 
         if (!restaurant) return res.status(500).json({ error: 'Could not find or create restaurant' });
 
+        logger.info({ id: restaurant.id, slug: restaurant.slug, isNewUser }, 'Signing token');
         const { password: _pw, ...safeRest } = restaurant as any;
         const token = jwt.sign(
             { restaurantId: restaurant.id, email: restaurant.email },
             process.env.JWT_SECRET!,
             { expiresIn: '30d' }
         );
-        res.json({ token, restaurant: safeRest });
+        res.json({ token, restaurant: safeRest, is_new_user: isNewUser });
     } catch (err: any) {
         logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, 'Supabase token exchange error');
         res.status(500).json({ error: 'Internal error', detail: err?.message });
