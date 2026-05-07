@@ -4,6 +4,16 @@ import crypto from 'crypto';
 import { AppError, ValidationError } from '../lib/errors';
 import logger from '../lib/logger';
 
+// ─── Async Handler Wrapper ────────────────────────────────────────────────────
+// Eliminates repetitive try-catch blocks in route handlers
+// Catches Promise rejections and passes to errorHandler middleware
+
+export function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) {
+    return (req: Request, res: Response, next: NextFunction) => {
+        Promise.resolve(fn(req, res, next)).catch(next);
+    };
+}
+
 // ─── Correlation ID ───────────────────────────────────────────────────────────
 
 export function correlationId(req: Request, res: Response, next: NextFunction) {
