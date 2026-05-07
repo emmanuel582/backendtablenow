@@ -2,14 +2,13 @@ import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import vapiService from '../services/vapi.service';
-import { provisionVapi } from './auth';
+import { provisionVapi } from '../lib/provisioning';
 import logger from '../lib/logger';
 
 const router = Router();
 router.use(authenticateToken);
 
-// ── Allowed fields for PUT /settings ─────────────────────────────────────────
-// Explicit allowlist — only these fields may be updated via this route.
+// ── Allowed fields for PUT /settings ─────────────────────────────────────────────────
 const SETTINGS_ALLOWLIST = new Set([
     'name', 'owner_name', 'phone', 'address', 'cuisine_type',
     'opening_hours', 'services', 'capacity', 'special_features',
@@ -17,7 +16,7 @@ const SETTINGS_ALLOWLIST = new Set([
     'confirmation_email', 'cancellation_policy',
 ]);
 
-// ── GET /settings ─────────────────────────────────────────────────────────────
+// ── GET /settings ───────────────────────────────────────────────────────────────────
 
 router.get('/', async (req: AuthRequest, res: Response) => {
     try {
@@ -34,13 +33,12 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }
 });
 
-// ── PUT /settings ─────────────────────────────────────────────────────────────
+// ── PUT /settings ───────────────────────────────────────────────────────────────────
 
 router.put('/', async (req: AuthRequest, res: Response) => {
     try {
         const restaurantId = req.user!.restaurantId;
 
-        // Allowlist: only accept fields that are explicitly permitted
         const updates: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(req.body)) {
             if (SETTINGS_ALLOWLIST.has(key)) updates[key] = value;
@@ -58,19 +56,16 @@ router.put('/', async (req: AuthRequest, res: Response) => {
             return res.status(500).json({ error: 'Failed to update settings' });
         }
 
-        // Sync VAPI assistant if relevant fields changed
         if (restaurant.vapi_assistant_id) {
             try {
                 const updated = await vapiService.updateAssistant(restaurant.vapi_assistant_id, restaurant);
                 if (updated === null) {
-                    // Assistant no longer exists on VAPI — clear stale ID
                     logger.warn({ assistantId: restaurant.vapi_assistant_id }, '🧹 Clearing stale VAPI assistant ID');
                     await supabase.from('restaurants').update({ vapi_assistant_id: null }).eq('id', restaurantId);
                     restaurant.vapi_assistant_id = null;
                 }
             } catch (vapiError) {
                 logger.error({ vapiError }, 'VAPI assistant update error');
-                // Non-fatal — don't fail the settings update
             }
         }
 
@@ -82,7 +77,7 @@ router.put('/', async (req: AuthRequest, res: Response) => {
     }
 });
 
-// ── POST /settings/retry-vapi ─────────────────────────────────────────────────
+// ── POST /settings/retry-vapi ───────────────────────────────────────────────────────
 
 router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
     try {
@@ -93,7 +88,6 @@ router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
-        // If already provisioned, verify it still exists on VAPI
         if (restaurant.vapi_phone_number && restaurant.vapi_assistant_id) {
             try {
                 const exists = await vapiService.checkAssistantExists(restaurant.vapi_assistant_id);
