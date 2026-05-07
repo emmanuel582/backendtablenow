@@ -288,24 +288,53 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const email = userBody.email;
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
+        const googleName = userBody.user_metadata?.full_name || userBody.user_metadata?.name || email.split('@')[0];
+        const googlePhoto = userBody.user_metadata?.avatar_url || userBody.user_metadata?.picture || null;
+        const googleId = userBody.id;
+
         const { data: restaurants } = await supabase
             .from('restaurants').select('*').eq('email', email).limit(1);
         let restaurant: any = restaurants?.[0] || null;
-        let isNewUser = false;
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
-            const name = userBody.user_metadata?.full_name || userBody.user_metadata?.name || email.split('@')[0];
+            const name = googleName;
             const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
                 || `resto-${Date.now().toString(36)}`;
+            logger.info({ name, slug, email }, 'Creating restaurant from Google OAuth');
             const { data: newRest, error: insertErr } = await supabase
                 .from('restaurants')
-                .insert({ email, name, owner_name: name, google_id: userBody.id, slug })
+                .insert({ email, name, owner_name: name, google_id: googleId, slug })
                 .select().single();
             if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
             restaurant = newRest;
-            isNewUser = true;
-        } else if (!restaurant.slug) {
+
+            // Provision VAPI asynchronously for new restaurants
+            setImmediate(async () => {
+                try {
+                    await provisioningService.provision(restaurant);
+                } catch (vapiErr) {
+                    logger.error({ vapiErr, restaurantId: restaurant.id }, '❌ VAPI provisioning error');
+                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
+                }
+            });
+
+            const { password: _pw, ...safeRest } = restaurant as any;
+            const token = jwt.sign(
+                { restaurantId: restaurant.id, email: restaurant.email },
+                process.env.JWT_SECRET!,
+                { expiresIn: '30d' }
+            );
+            logger.info({ id: restaurant.id, slug: restaurant.slug }, 'New user auto-provisioning');
+            return res.json({
+                token,
+                restaurant: safeRest,
+                is_new_user: true,
+                google_profile: { email, name: googleName, photo: googlePhoto }
+            });
+        }
+
+        if (!restaurant.slug) {
             const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
                 || `resto-${restaurant.id.slice(0, 8)}`;
             await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
@@ -314,14 +343,20 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 
         if (!restaurant) return res.status(500).json({ error: 'Could not find or create restaurant' });
 
-        logger.info({ id: restaurant.id, slug: restaurant.slug, isNewUser }, 'Signing token');
+        // Existing restaurant — return login data with google_profile for optional prefill
+        logger.info({ id: restaurant.id, slug: restaurant.slug }, 'Existing user login');
         const { password: _pw, ...safeRest } = restaurant as any;
         const token = jwt.sign(
             { restaurantId: restaurant.id, email: restaurant.email },
             process.env.JWT_SECRET!,
             { expiresIn: '30d' }
         );
-        res.json({ token, restaurant: safeRest, is_new_user: isNewUser });
+        res.json({
+            token,
+            restaurant: safeRest,
+            is_new_user: false,
+            google_profile: { email, name: googleName, photo: googlePhoto }
+        });
     } catch (err: any) {
         logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, 'Supabase token exchange error');
         res.status(500).json({ error: 'Internal error', detail: err?.message });
