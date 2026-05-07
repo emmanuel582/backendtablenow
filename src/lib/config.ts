@@ -10,15 +10,38 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 // Toute variable listée ici est REQUISE. Si l'une manque ou est invalide, le
 // serveur refuse de démarrer (throw au chargement du module). C'est volontaire :
 // mieux vaut un crash explicite au boot qu'un fallback silencieux qui envoie
-// les emails depuis un mauvais compte.
+// les emails depuis un mauvais compte ou expose un endpoint non protégé.
 const schema = z.object({
+    // ── SMTP / Email ────────────────────────────────────────────────────────
     SMTP_HOST:    z.string().min(1, 'requis (ex: smtp.resend.com)'),
     SMTP_PORT:    z.coerce.number().int().positive('doit être un entier positif (ex: 465 ou 587)'),
     SMTP_USER:    z.string().min(1, 'requis (identifiant SMTP du fournisseur)'),
     SMTP_PASS:    z.string().min(1, 'requis (clé/mot de passe SMTP du fournisseur)'),
     EMAIL_FROM:   z.string().email('doit être un email valide (ex: info@tablenow.io)'),
     EMAIL_DOMAIN: z.string().min(1, 'requis (ex: tablenow.io — utilisé pour les alias BCC)'),
+
+    // ── URLs ────────────────────────────────────────────────────────────────
     FRONTEND_URL: z.string().url('doit être une URL valide (ex: https://app.tablenow.io)'),
+    BACKEND_URL:  z.string().url('doit être une URL valide (ex: https://api.tablenow.io)'),
+
+    // ── Supabase ────────────────────────────────────────────────────────────
+    SUPABASE_URL:         z.string().url('doit être une URL Supabase valide'),
+    SUPABASE_SERVICE_KEY: z.string().min(1, 'requis (service_role key — accès admin DB)'),
+    SUPABASE_ANON_KEY:    z.string().min(1, 'requis (anon key — utilisé pour le flux Google OAuth Supabase)'),
+
+    // ── Auth ────────────────────────────────────────────────────────────────
+    JWT_SECRET:      z.string().min(32, 'doit contenir au moins 32 caractères'),
+    // Protège POST /dashboard/insights/refresh appelé par pg_cron.
+    // Sans cette variable définie, le endpoint serait publiquement accessible.
+    INTERNAL_SECRET: z.string().min(32, 'doit contenir au moins 32 caractères (protège /insights/refresh)'),
+
+    // ── Google ──────────────────────────────────────────────────────────────
+    GOOGLE_CLIENT_ID:     z.string().min(1, 'requis (OAuth Google Calendar + Google Auth)'),
+    GOOGLE_CLIENT_SECRET: z.string().min(1, 'requis'),
+    GOOGLE_REDIRECT_URI:  z.string().url('doit être une URL valide'),
+
+    // ── VAPI ────────────────────────────────────────────────────────────────
+    VAPI_API_KEY: z.string().min(1, 'requis'),
     // Mode de provisioning du numéro de téléphone VAPI lors de l'onboarding :
     //   'pool'    → cherche un numéro déjà acheté et libre dans le compte VAPI (défaut)
     //   'dynamic' → achat à la volée via POST /phone-number (NON IMPLÉMENTÉ — placeholder)
@@ -55,7 +78,23 @@ export const config = {
         domain: env.EMAIL_DOMAIN,
     },
     frontendUrl: env.FRONTEND_URL,
+    backendUrl:  env.BACKEND_URL,
+    supabase: {
+        url:        env.SUPABASE_URL,
+        serviceKey: env.SUPABASE_SERVICE_KEY,
+        anonKey:    env.SUPABASE_ANON_KEY,
+    },
+    auth: {
+        jwtSecret:      env.JWT_SECRET,
+        internalSecret: env.INTERNAL_SECRET,
+    },
+    google: {
+        clientId:     env.GOOGLE_CLIENT_ID,
+        clientSecret: env.GOOGLE_CLIENT_SECRET,
+        redirectUri:  env.GOOGLE_REDIRECT_URI,
+    },
     vapi: {
+        apiKey:           env.VAPI_API_KEY,
         provisioningMode: env.VAPI_PROVISIONING_MODE,
     },
 } as const;

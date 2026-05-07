@@ -4,6 +4,7 @@ import supabase from '../config/supabase';
 import { normalizeBooking } from '../services/booking.service';
 import { DatabaseError } from '../lib/errors';
 import logger from '../lib/logger';
+import { config } from '../lib/config';
 
 const router = Router();
 
@@ -13,7 +14,7 @@ const router = Router();
 
 router.post('/insights/refresh', async (req: Request, res: Response) => {
     const secret = req.headers['x-internal-secret'];
-    if (secret !== process.env.INTERNAL_SECRET) {
+    if (!secret || secret !== config.auth.internalSecret) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -90,8 +91,8 @@ router.post('/insights/refresh', async (req: Request, res: Response) => {
                 }
 
                 const slotEntries = Object.entries(slotBuckets).sort((a, b) => a[1] - b[1]);
-                const bestSlotTime   = slotEntries[0]?.[0] || null;
                 const lowestSlotTime = slotEntries[0]?.[0] || null;
+                const bestSlotTime   = slotEntries[slotEntries.length - 1]?.[0] || null;
 
                 // Upsert into insights_cache
                 await supabase.from('insights_cache').upsert({
@@ -266,15 +267,13 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
             peakUnplacedHour = `${maxHour}h`;
         }
 
-        // 6. Créneau à valoriser : heure avec le moins de réservations confirmées
-        // On découpe la journée en créneaux de 30min entre 12h et 23h
+        // 6. Analyse des créneaux : répartition des réservations confirmées par heure
         const slotBuckets: Record<string, number> = {};
         const openingHours = restaurant?.opening_hours || {};
         const dayOfWeek = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][new Date().getDay()];
         const todayHours = openingHours[dayOfWeek];
 
         if (todayHours?.open) {
-            // Build slots from opening hours
             const startH = parseInt((todayHours.from || '12:00').split(':')[0]);
             const endH   = parseInt((todayHours.to   || '23:00').split(':')[0]);
             for (let h = startH; h < endH; h++) {
@@ -294,19 +293,12 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
             });
         }
 
-        let bestSlotTime: string | null = null;
-        const slotEntries = Object.entries(slotBuckets);
-        if (slotEntries.length > 0) {
-            // Slot with fewest confirmed bookings — availability to promote
-            const minSlot = slotEntries.sort((a, b) => a[1] - b[1])[0];
-            bestSlotTime = minSlot[0];
-        }
-
-        // 7. Créneau le plus faible (remplissage)
-        let lowestSlotTime: string | null = null;
-        if (slotEntries.length > 0) {
-            lowestSlotTime = slotEntries.sort((a, b) => a[1] - b[1])[0][0];
-        }
+        // Sort ascending by booking count
+        const slotEntries = Object.entries(slotBuckets).sort((a, b) => a[1] - b[1]);
+        // lowestSlotTime = créneau le moins rempli (à surveiller / sous-performant)
+        const lowestSlotTime = slotEntries[0]?.[0] || null;
+        // bestSlotTime = créneau le plus rempli (le plus populaire de la journée)
+        const bestSlotTime   = slotEntries[slotEntries.length - 1]?.[0] || null;
 
         logger.info({ restaurantId, today, confirmedReservations, occupancyRate }, 'Insights computed');
 
