@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
-
+import { createBookingCore } from '../services/booking.service';
 import calendarService from '../services/calendar.service';
 
 const router = Router();
@@ -338,25 +338,23 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
         // Normalize time
         const normalizedTime = normalizeTime(time) || time;
-        const bookedFor = `${date}T${normalizedTime}:00`;
 
-        const { data: booking, error: insertError } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id: resolvedId,
-                customer_id: customerId,
-                booked_for: bookedFor,
-                covers,
-                source: 'phone',
-                status: 'confirmed',
-                call_id: null,
-                guest_language: language
-            })
-            .select()
-            .single();
-
-        if (insertError || !booking) {
-            console.error('[create-booking] Insert error:', insertError);
+        // Create booking with idempotency
+        let booking;
+        try {
+            booking = await createBookingCore({
+                restaurantId: resolvedId,
+                date,
+                time: normalizedTime,
+                phone: guestPhone,
+                guestName,
+                guestEmail,
+                partySize: covers,
+                source: 'vapi',
+                correlationId: req.headers['x-correlation-id'] as string | undefined
+            });
+        } catch (err: any) {
+            console.error('[create-booking] createBookingCore error:', err);
             const payload = { success: false, message: 'Erreur lors de la création de la réservation.' };
             return toolCall
                 ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
@@ -874,30 +872,17 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
             }
         }
 
-        const bookedFor = `${date}T${normalizedTime}:00`;
-        const { data: booking, error: insertError } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id: restaurantId,
-                customer_id: customerId,
-                booked_for: bookedFor,
-                covers,
-                special_requests: specialRequests || null,
-                source: 'vapi',
-                status: 'confirmed',
-                call_id: null,
-                guest_language: language
-            })
-            .select()
-            .single();
-
-        if (insertError || !booking) {
-            console.error('[create_booking] Insert error:', insertError);
-            return {
-                success: false,
-                message: language === 'en' ? 'Could not create the booking.' : 'Impossible de créer la réservation.'
-            };
-        }
+        const booking = await createBookingCore({
+            restaurantId,
+            date,
+            time: normalizedTime || time,
+            phone: phoneKey,
+            guestName,
+            guestEmail,
+            partySize: covers,
+            source: 'vapi',
+            specialRequests
+        });
 
         console.log(`✅ Booking created: ${booking.id} — customer: ${customerId}`);
 

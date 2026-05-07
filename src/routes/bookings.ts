@@ -10,7 +10,8 @@ import {
     getBookings,
     getBookingById,
     cancelBooking,
-    normalizeBooking
+    normalizeBooking,
+    createBookingCore
 } from '../services/booking.service';
 import { NotFoundError, DatabaseError } from '../lib/errors';
 import supabase from '../config/supabase';
@@ -61,25 +62,18 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
             ? language
             : (restaurant.language === 'en' ? 'en' : 'fr');
 
-        const { data: booking, error } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id:  restaurantId,
-                booking_date:   date,
-                booking_time:   time,
-                party_size:     partySize,
-                guest_name:     guestName,
-                guest_email:    guestEmail,
-                guest_phone:    guestPhone || null,
-                special_requests: specialRequests || null,
-                status:         'confirmed',
-                source:         'manual',
-                guest_language: guestLanguage
-            })
-            .select()
-            .single();
-
-        if (error || !booking) throw new DatabaseError('Failed to create booking', error);
+        const booking = await createBookingCore({
+            restaurantId,
+            date,
+            time,
+            phone: guestPhone || '',
+            guestName,
+            guestEmail,
+            partySize,
+            source: 'dashboard',
+            specialRequests,
+            correlationId: req.headers['x-correlation-id'] as string | undefined
+        });
 
         log.info({ bookingId: booking.id, language: guestLanguage }, 'Manual booking created');
 
@@ -124,7 +118,7 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
             }
         });
 
-        res.status(201).json({ message: 'Booking created', booking: normalizeBooking(booking) });
+        res.status(201).json({ message: 'Booking created', booking });
     } catch (err) { next(err); }
 });
 

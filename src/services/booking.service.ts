@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import supabase from '../config/supabase';
 import logger from '../lib/logger';
 import { DatabaseError, NotFoundError, ConflictError } from '../lib/errors';
+import { handlePostgresError } from '../lib/supabase.utils';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
@@ -76,6 +78,88 @@ export async function getBookingById(id: string, restaurantId: string) {
 
     if (error || !data) throw new NotFoundError('Booking');
     return normalizeBooking(data);
+}
+
+// ─── Core creation (handles idempotency + conflict detection) ────────────────
+
+export async function createBookingCore(input: {
+    restaurantId: string;
+    date: string;        // YYYY-MM-DD
+    time: string;        // HH:MM
+    phone: string;
+    guestName: string;
+    guestEmail?: string;
+    partySize: number;
+    source: 'dashboard' | 'vapi' | 'webhook';
+    specialRequests?: string;
+    correlationId?: string;
+}) {
+    const { restaurantId, date, time, phone, guestName, guestEmail, partySize, source, specialRequests, correlationId } = input;
+    const log = logger.child({ correlationId, restaurantId, source, date, time });
+
+    // Generate idempotency key from restaurant_id + date + time + phone
+    const idempotencyKey = crypto
+        .createHash('sha256')
+        .update(`${restaurantId}|${date}|${time}|${phone}`)
+        .digest('hex');
+
+    // Try to insert new booking
+    const { data: booking, error } = await supabase
+        .from('bookings')
+        .insert({
+            restaurant_id: restaurantId,
+            booking_date: date,
+            booking_time: time,
+            party_size: partySize,
+            guest_name: guestName,
+            guest_email: guestEmail || null,
+            guest_phone: phone || null,
+            special_requests: specialRequests || null,
+            source,
+            status: 'confirmed',
+            idempotency_key: idempotencyKey
+        })
+        .select()
+        .single();
+
+    // Handle UNIQUE constraint conflict (duplicate idempotency_key)
+    if (error?.code === '23505') {
+        log.info({ idempotencyKey }, 'Idempotent booking — fetching existing');
+        const { data: existing, error: fetchError } = await supabase
+            .from('bookings')
+            .select('*')
+            .eq('restaurant_id', restaurantId)
+            .eq('idempotency_key', idempotencyKey)
+            .single();
+
+        if (fetchError) {
+            log.error({ fetchError, idempotencyKey }, 'Failed to fetch existing booking after conflict');
+            throw new DatabaseError('Booking conflict resolution failed', fetchError);
+        }
+
+        if (!existing) {
+            log.error({ idempotencyKey }, 'UNIQUE conflict but no existing booking found');
+            throw new DatabaseError('Data integrity error: conflict detected but booking not found', error);
+        }
+
+        log.info({ bookingId: existing.id, idempotencyKey }, 'Returning existing booking');
+        return normalizeBooking(existing);
+    }
+
+    // Handle other database errors
+    if (error) {
+        const pgError = handlePostgresError(error);
+        log.error({ error, pgError }, 'Booking insert failed');
+        throw new DatabaseError(pgError.message, error);
+    }
+
+    if (!booking) {
+        log.error({ idempotencyKey }, 'Booking insert succeeded but no data returned');
+        throw new DatabaseError('Booking creation failed: no data returned', error);
+    }
+
+    log.info({ bookingId: booking.id, idempotencyKey }, 'Booking created');
+    return normalizeBooking(booking);
 }
 
 // ─── Create (VAPI path) ───────────────────────────────────────────────────────
