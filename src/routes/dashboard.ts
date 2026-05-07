@@ -194,15 +194,12 @@ router.get('/stats', async (req: AuthRequest, res: Response, next) => {
 });
 
 // ─── GET /dashboard/insights ──────────────────────────────────────────────────
-// Calcule les 5 métriques d'analyse pour aujourd'hui.
-// Déterministe — aucun ML, aucun NLP.
 
 router.get('/insights', async (req: AuthRequest, res: Response, next) => {
     try {
         const restaurantId = req.user!.restaurantId;
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const today = new Date().toISOString().split('T')[0];
 
-        // 1. Récupérer capacité totale du restaurant
         const { data: restaurant, error: rErr } = await supabase
             .from('restaurants')
             .select('capacity, opening_hours')
@@ -213,7 +210,6 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
 
         const totalCapacity = restaurant?.capacity || 40;
 
-        // 2. Réservations confirmées aujourd'hui
         const { data: todayBookings, error: bErr } = await supabase
             .from('bookings')
             .select('*')
@@ -226,12 +222,10 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
         const confirmedReservations = (todayBookings || []).length;
         const confirmedCovers = (todayBookings || []).reduce((s: number, b: any) => s + (b.party_size || b.covers || 0), 0);
 
-        // 3. Taux de remplissage global
         const occupancyRate = totalCapacity > 0
             ? Math.round((confirmedCovers / totalCapacity) * 100)
             : 0;
 
-        // 4. Appels d'aujourd'hui — pour demandes non placées et abandonnées
         const { data: todayCalls, error: cErr } = await supabase
             .from('call_logs')
             .select('*')
@@ -243,17 +237,14 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
 
         const calls = todayCalls || [];
 
-        // Demandes abandonnées : durée < 15s OU status = 'missed'/'failed'
         const abandonedCalls = calls.filter((c: any) =>
             (c.duration || 0) < 15 || c.status === 'missed' || c.status === 'failed'
         ).length;
 
-        // Demandes non placées (v1) : appel > 20s ET reservation_booked = false
         const unplacedRequests = calls.filter((c: any) =>
             (c.duration || 0) > 20 && c.reservation_booked === false
         ).length;
 
-        // 5. Pic horaire des demandes non placées (heure avec le plus d'appels non aboutis)
         const peakBuckets: Record<number, number> = {};
         calls.filter((c: any) => c.reservation_booked === false && (c.duration || 0) > 20)
             .forEach((c: any) => {
@@ -267,7 +258,6 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
             peakUnplacedHour = `${maxHour}h`;
         }
 
-        // 6. Analyse des créneaux : répartition des réservations confirmées par heure
         const slotBuckets: Record<string, number> = {};
         const openingHours = restaurant?.opening_hours || {};
         const dayOfWeek = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][new Date().getDay()];
@@ -293,11 +283,8 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
             });
         }
 
-        // Sort ascending by booking count
         const slotEntries = Object.entries(slotBuckets).sort((a, b) => a[1] - b[1]);
-        // lowestSlotTime = créneau le moins rempli (à surveiller / sous-performant)
         const lowestSlotTime = slotEntries[0]?.[0] || null;
-        // bestSlotTime = créneau le plus rempli (le plus populaire de la journée)
         const bestSlotTime   = slotEntries[slotEntries.length - 1]?.[0] || null;
 
         logger.info({ restaurantId, today, confirmedReservations, occupancyRate }, 'Insights computed');
