@@ -6,6 +6,36 @@ export const UUIDSchema = z.string().uuid();
 export const DateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date must be YYYY-MM-DD');
 export const TimeSchema = z.string().regex(/^\d{2}:\d{2}$/, 'Time must be HH:MM');
 export const PhoneSchema = z.string().min(6).max(20);
+export const EmailSchema = z.string().email('Invalid email address');
+export const PasswordSchema = z.string().min(8, 'Password must be at least 8 characters');
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+export const RegisterSchema = z.object({
+    email:           EmailSchema,
+    password:        PasswordSchema,
+    restaurantName:  z.string().min(1).max(200).trim(),
+    ownerName:       z.string().min(1).max(200).trim(),
+    phone:           z.string().max(20).optional(),
+    address:         z.string().max(500).optional(),
+    cuisineType:     z.string().max(100).optional(),
+    openingHours:    z.string().max(1000).optional(),
+    specialFeatures: z.string().max(1000).optional(),
+    faqText:         z.string().max(5000).optional()
+});
+
+export const LoginSchema = z.object({
+    email:    EmailSchema,
+    password: z.string().min(1)
+});
+
+export const VerifyEmailSchema = z.object({
+    token: z.string().min(1)
+});
+
+export const GoogleSubpabaseSchema = z.object({
+    access_token: z.string().min(1)
+});
 
 // ─── Booking ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +114,10 @@ export const VapiToolCallSchema = z.object({
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type RegisterInput        = z.infer<typeof RegisterSchema>;
+export type LoginInput           = z.infer<typeof LoginSchema>;
+export type VerifyEmailInput     = z.infer<typeof VerifyEmailSchema>;
+export type GoogleSubpabaseInput = z.infer<typeof GoogleSubpabaseSchema>;
 export type CreateBookingInput    = z.infer<typeof CreateBookingSchema>;
 export type ManualCreateBookingInput = z.infer<typeof ManualCreateBookingSchema>;
 export type UpdateBookingInput    = z.infer<typeof UpdateBookingSchema>;

@@ -10,6 +10,8 @@ import ragService from '../services/rag.service';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
 import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
+import { validate } from '../middleware/handlers';
+import { RegisterSchema, LoginSchema, VerifyEmailSchema, GoogleSubpabaseSchema } from '../types/schemas';
 
 const router = Router();
 
@@ -35,20 +37,16 @@ const upload = multer({
 
 // ── Register ─────────────────────────────────────────────────────────────────────────────
 
-router.post('/register', upload.fields([
+router.post('/register', validate(RegisterSchema), upload.fields([
     { name: 'menu',     maxCount: 1 },
     { name: 'faq',      maxCount: 1 },
     { name: 'policies', maxCount: 1 },
-]), async (req: Request, res: Response) => {
+]), async (req: Request, res: Response, next) => {
     try {
         const {
             email, password, restaurantName, ownerName,
             phone, address, cuisineType, openingHours, specialFeatures, faqText,
         } = req.body;
-
-        if (!email || !password || !restaurantName || !ownerName) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
 
         const existingUser = await safeSingle(
             supabase.from('restaurants').select('id').eq('email', email),
@@ -117,7 +115,7 @@ router.post('/register', upload.fields([
         res.status(201).json({ message: 'Account created successfully.', restaurantId: restaurant.id });
     } catch (error: any) {
         logger.error({ error }, 'Registration error');
-        res.status(500).json({ error: 'Registration failed' });
+        next(error);
     }
 });
 
@@ -140,10 +138,9 @@ async function processDocumentsInBackground(
 
 // ── Verify email ─────────────────────────────────────────────────────────────────────
 
-router.post('/verify-email', async (req: Request, res: Response) => {
+router.post('/verify-email', validate(VerifyEmailSchema), async (req: Request, res: Response, next) => {
     try {
         const { token } = req.body;
-        if (!token) return res.status(400).json({ error: 'Verification token required' });
 
         const restaurant = await safeSingle(
             supabase.from('restaurants').select('*').eq('verification_token', token),
@@ -230,10 +227,9 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
 // ── Login ──────────────────────────────────────────────────────────────────────────────────
 
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', validate(LoginSchema), async (req: Request, res: Response, next) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
         const restaurant = await safeSingle(
             supabase.from('restaurants').select('*').eq('email', email),
@@ -275,9 +271,8 @@ router.get('/google/callback', (_req: Request, res: Response) => {
 
 // ── Supabase Google OAuth token exchange ───────────────────────────────────────────
 
-router.post('/google/supabase', async (req: Request, res: Response) => {
+router.post('/google/supabase', validate(GoogleSubpabaseSchema), async (req: Request, res: Response, next) => {
     const { access_token } = req.body;
-    if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
     try {
         const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
             headers: {
@@ -378,7 +373,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 
 // ── Get current user ───────────────────────────────────────────────────────────────────
 
-router.get('/me', async (req: Request, res: Response) => {
+router.get('/me', async (req: Request, res: Response, next) => {
     try {
         const token = req.headers['authorization']?.split(' ')[1];
         if (!token) return res.status(401).json({ error: 'Access token required' });
