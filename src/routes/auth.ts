@@ -148,7 +148,20 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             .from('restaurants').select('*').eq('verification_token', token).single();
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
-        if (restaurant.is_verified)   return res.status(400).json({ error: 'Email already verified' });
+
+        // Already verified — still return a JWT so the user can auto-login
+        if (restaurant.is_verified) {
+            const jwtToken = jwt.sign(
+                { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
+                process.env.JWT_SECRET!,
+                { expiresIn: '30d' }
+            );
+            return res.json({
+                message: 'Email already verified.',
+                token: jwtToken,
+                status: restaurant.status,
+            });
+        }
 
         const { error: updateError } = await supabase
             .from('restaurants')
@@ -175,7 +188,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                         <h3>Prochaines étapes :</h3>
                         <ol>
                           <li>Ajoutez le BCC e-mail dans vos notifications Zenchef ou SevenRooms</li>
-                          <li>Testez votre numéro IA en l’appelant</li>
+                          <li>Testez votre numéro IA en l'appelant</li>
                           <li>Configurez vos paramètres dans le tableau de bord</li>
                         </ol>
                     `,
@@ -190,8 +203,16 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             }
         });
 
+        // Return JWT immediately so the frontend can auto-login → /onboarding
+        const jwtToken = jwt.sign(
+            { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
+            process.env.JWT_SECRET!,
+            { expiresIn: '30d' }
+        );
+
         res.json({
-            message: 'Email vérifié. Votre assistant IA est en cours de configuration.',
+            message: 'Email vérifié ! Bienvenue dans TableNow.',
+            token: jwtToken,
             status: 'provisioning',
         });
     } catch (error: any) {
