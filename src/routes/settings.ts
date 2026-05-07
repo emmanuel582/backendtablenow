@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import vapiService from '../services/vapi.service';
-import { provisionVapi } from '../lib/provisioning';
+import provisioningService from '../services/provisioning.service';
 import logger from '../lib/logger';
 
 const router = Router();
@@ -16,15 +16,13 @@ const SETTINGS_ALLOWLIST = new Set([
     'confirmation_email', 'cancellation_policy',
 ]);
 
-// ── GET /settings ───────────────────────────────────────────────────────────────────
+// ── GET /settings ─────────────────────────────────────────────────────────────────
 
 router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const { data: restaurant, error } = await supabase
             .from('restaurants').select('*').eq('id', req.user!.restaurantId).single();
-
         if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
-
         const { password, verification_token, ...settings } = restaurant;
         res.json({ settings });
     } catch (error: any) {
@@ -33,7 +31,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     }
 });
 
-// ── PUT /settings ───────────────────────────────────────────────────────────────────
+// ── PUT /settings ────────────────────────────────────────────────────────────────
 
 router.put('/', async (req: AuthRequest, res: Response) => {
     try {
@@ -43,14 +41,12 @@ router.put('/', async (req: AuthRequest, res: Response) => {
         for (const [key, value] of Object.entries(req.body)) {
             if (SETTINGS_ALLOWLIST.has(key)) updates[key] = value;
         }
-
         if (Object.keys(updates).length === 0) {
             return res.status(400).json({ error: 'No valid fields to update' });
         }
 
         const { data: restaurant, error } = await supabase
             .from('restaurants').update(updates).eq('id', restaurantId).select().single();
-
         if (error) {
             logger.error({ error }, 'Settings update DB error');
             return res.status(500).json({ error: 'Failed to update settings' });
@@ -77,7 +73,7 @@ router.put('/', async (req: AuthRequest, res: Response) => {
     }
 });
 
-// ── POST /settings/retry-vapi ───────────────────────────────────────────────────────
+// ── POST /settings/retry-vapi ────────────────────────────────────────────────────
 
 router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
     try {
@@ -85,7 +81,6 @@ router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
 
         const { data: restaurant, error: findError } = await supabase
             .from('restaurants').select('*').eq('id', restaurantId).single();
-
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         if (restaurant.vapi_phone_number && restaurant.vapi_assistant_id) {
@@ -101,17 +96,14 @@ router.post('/retry-vapi', async (req: AuthRequest, res: Response) => {
         await supabase.from('restaurants').update({ status: 'provisioning' }).eq('id', restaurantId);
 
         try {
-            const { assistantId, phoneNumber, bccEmail } = await provisionVapi(restaurant);
-            res.json({
-                message: 'VAPI provisioning successful!',
-                phoneNumber,
-                assistantId,
-                bccEmail,
-            });
+            const { assistantId, phoneNumber, bccEmail } = await provisioningService.provision(restaurant);
+            res.json({ message: 'VAPI provisioning successful!', phoneNumber, assistantId, bccEmail });
         } catch (vapiError: any) {
             logger.error({ vapiError }, '❌ VAPI retry provisioning error');
-            await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
-            return res.status(500).json({ error: 'VAPI provisioning failed. Please contact support.', details: vapiError.message });
+            return res.status(500).json({
+                error:   'VAPI provisioning failed. Please contact support.',
+                details: vapiError.message,
+            });
         }
     } catch (error: any) {
         logger.error({ error }, 'Retry VAPI error');

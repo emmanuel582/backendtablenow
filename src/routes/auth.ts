@@ -6,10 +6,9 @@ import multer from 'multer';
 import path from 'path';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
-import vapiService from '../services/vapi.service';
 import ragService from '../services/rag.service';
 import logger from '../lib/logger';
-import { provisionVapi } from '../lib/provisioning';
+import provisioningService from '../services/provisioning.service';
 
 const router = Router();
 
@@ -21,7 +20,7 @@ function generateSlug(name: string): string {
 
 const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, 'uploads/'),
-    filename: (_req, file, cb) => cb(null, `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`),
+    filename:    (_req, file, cb) => cb(null, `${Date.now()}-${uuidv4()}${path.extname(file.originalname)}`),
 });
 
 const upload = multer({
@@ -40,31 +39,36 @@ const upload = multer({
 // ── Register ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/register', upload.fields([
-    { name: 'menu', maxCount: 1 },
-    { name: 'faq', maxCount: 1 },
+    { name: 'menu',     maxCount: 1 },
+    { name: 'faq',      maxCount: 1 },
     { name: 'policies', maxCount: 1 },
 ]), async (req: Request, res: Response) => {
     try {
-        const { email, password, restaurantName, ownerName, phone, address, cuisineType, openingHours, specialFeatures, faqText } = req.body;
+        const {
+            email, password, restaurantName, ownerName,
+            phone, address, cuisineType, openingHours, specialFeatures, faqText,
+        } = req.body;
 
         if (!email || !password || !restaurantName || !ownerName) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        const { data: existingUser } = await supabase.from('restaurants').select('id').eq('email', email).single();
+        const { data: existingUser } = await supabase
+            .from('restaurants').select('id').eq('email', email).single();
         if (existingUser) return res.status(409).json({ error: 'Email already registered' });
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword    = await bcrypt.hash(password, 10);
         const verificationToken = uuidv4();
 
         let slug = generateSlug(restaurantName);
-        const { data: existingSlug } = await supabase.from('restaurants').select('id').eq('slug', slug).single();
+        const { data: existingSlug } = await supabase
+            .from('restaurants').select('id').eq('slug', slug).single();
         if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
 
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
         const documents: Record<string, string> = {};
-        if (files?.menu)     documents.menu_url = files.menu[0].path;
-        if (files?.faq)      documents.faq_url = files.faq[0].path;
+        if (files?.menu)     documents.menu_url     = files.menu[0].path;
+        if (files?.faq)      documents.faq_url      = files.faq[0].path;
         if (files?.policies) documents.policies_url = files.policies[0].path;
 
         const { data: restaurant, error: dbError } = await supabase
@@ -73,8 +77,10 @@ router.post('/register', upload.fields([
                 email, password: hashedPassword, name: restaurantName, owner_name: ownerName,
                 phone, address, cuisine_type: cuisineType, opening_hours: openingHours,
                 special_features: specialFeatures, faq_text: faqText,
-                menu_url: documents.menu_url, faq_document_url: documents.faq_url, policies_url: documents.policies_url,
-                verification_token: verificationToken, is_verified: false, status: 'pending', slug,
+                menu_url: documents.menu_url, faq_document_url: documents.faq_url,
+                policies_url: documents.policies_url,
+                verification_token: verificationToken,
+                is_verified: false, status: 'pending', slug,
             })
             .select()
             .single();
@@ -84,18 +90,19 @@ router.post('/register', upload.fields([
             return res.status(500).json({ error: 'Failed to create account' });
         }
 
-        // Send verification email — if it fails, auto-verify and provision
         try {
             await emailService.sendVerificationEmail(email, verificationToken, restaurantName);
         } catch (emailErr) {
             logger.warn({ emailErr }, '⚠️ Verification email failed — auto-verifying');
-            await supabase.from('restaurants').update({ is_verified: true, verification_token: null, status: 'provisioning' }).eq('id', restaurant.id);
+            await supabase
+                .from('restaurants')
+                .update({ is_verified: true, verification_token: null, status: 'provisioning' })
+                .eq('id', restaurant.id);
             setImmediate(async () => {
                 try {
-                    await provisionVapi(restaurant);
+                    await provisioningService.provision(restaurant);
                 } catch (vapiErr) {
                     logger.error({ vapiErr }, '❌ Fallback VAPI provisioning error');
-                    await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
                 }
             });
         }
@@ -115,17 +122,22 @@ router.post('/register', upload.fields([
 
 // ── Background RAG processing ───────────────────────────────────────────────────
 
-async function processDocumentsInBackground(restaurantId: string, files: { [fieldname: string]: Express.Multer.File[] }) {
+async function processDocumentsInBackground(
+    restaurantId: string,
+    files: { [fieldname: string]: Express.Multer.File[] }
+) {
     logger.info({ restaurantId }, '📚 Starting background document processing');
     for (const type of ['menu', 'faq', 'policies'] as const) {
         if (files[type]?.[0]) {
-            await ragService.processAndStoreDocument(restaurantId, type, files[type][0].path, files[type][0].mimetype);
+            await ragService.processAndStoreDocument(
+                restaurantId, type, files[type][0].path, files[type][0].mimetype
+            );
         }
     }
     logger.info({ restaurantId }, '✅ Background document processing complete');
 }
 
-// ── Verify email ──────────────────────────────────────────────────────────────────────
+// ── Verify email ─────────────────────────────────────────────────────────────────────
 
 router.post('/verify-email', async (req: Request, res: Response) => {
     try {
@@ -136,7 +148,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
             .from('restaurants').select('*').eq('verification_token', token).single();
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
-        if (restaurant.is_verified) return res.status(400).json({ error: 'Email already verified' });
+        if (restaurant.is_verified)   return res.status(400).json({ error: 'Email already verified' });
 
         const { error: updateError } = await supabase
             .from('restaurants')
@@ -147,9 +159,9 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         setImmediate(async () => {
             try {
-                const { phoneNumber, bccEmail } = await provisionVapi(restaurant);
+                const { phoneNumber, bccEmail } = await provisioningService.provision(restaurant);
                 await emailService.sendRestaurantNotification({
-                    to: restaurant.email,
+                    to:      restaurant.email,
                     subject: '🎉 Votre compte TableNow est prêt !',
                     message: `
                         <h2>Bienvenue sur TableNow !</h2>
@@ -163,39 +175,42 @@ router.post('/verify-email', async (req: Request, res: Response) => {
                         <h3>Prochaines étapes :</h3>
                         <ol>
                           <li>Ajoutez le BCC e-mail dans vos notifications Zenchef ou SevenRooms</li>
-                          <li>Testez votre numéro IA en l'appelant</li>
+                          <li>Testez votre numéro IA en l’appelant</li>
                           <li>Configurez vos paramètres dans le tableau de bord</li>
                         </ol>
                     `,
                 });
             } catch (vapiError: any) {
                 logger.error({ vapiError }, '❌ VAPI provisioning error after verification');
-                await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
                 await emailService.sendRestaurantNotification({
-                    to: restaurant.email,
+                    to:      restaurant.email,
                     subject: 'Compte vérifié — configuration en cours',
                     message: 'Votre compte a été vérifié. Nous configurons votre assistant IA et vous notifierons dès que tout est prêt.',
                 });
             }
         });
 
-        res.json({ message: 'Email vérifié. Votre assistant IA est en cours de configuration.', status: 'provisioning' });
+        res.json({
+            message: 'Email vérifié. Votre assistant IA est en cours de configuration.',
+            status: 'provisioning',
+        });
     } catch (error: any) {
         logger.error({ error }, 'Verification error');
         res.status(500).json({ error: 'Verification failed' });
     }
 });
 
-// ── Login ───────────────────────────────────────────────────────────────────────────────────
+// ── Login ──────────────────────────────────────────────────────────────────────────────────
 
 router.post('/login', async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const { data: restaurant, error: findError } = await supabase.from('restaurants').select('*').eq('email', email).single();
+        const { data: restaurant, error: findError } = await supabase
+            .from('restaurants').select('*').eq('email', email).single();
         if (findError || !restaurant) return res.status(401).json({ error: 'Invalid credentials' });
-        if (!restaurant.is_verified) return res.status(403).json({ error: 'Please verify your email first' });
+        if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
 
         const isValidPassword = await bcrypt.compare(password, restaurant.password);
         if (!isValidPassword) return res.status(401).json({ error: 'Invalid credentials' });
@@ -214,24 +229,21 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 });
 
-// ── Google OAuth via Supabase ───────────────────────────────────────────────────────
+// ── Google OAuth via Supabase ──────────────────────────────────────────────────────
 
-router.get('/google', (req: Request, res: Response) => {
+router.get('/google', (_req: Request, res: Response) => {
     const supabaseUrl = process.env.SUPABASE_URL!;
-    const redirectTo = `${process.env.FRONTEND_URL || 'https://app.tablenow.io'}/auth/callback`;
-    const params = new URLSearchParams({
-        provider: 'google',
-        redirect_to: redirectTo,
-    });
+    const redirectTo  = `${process.env.FRONTEND_URL || 'https://app.tablenow.io'}/auth/callback`;
+    const params      = new URLSearchParams({ provider: 'google', redirect_to: redirectTo });
     res.redirect(`${supabaseUrl}/auth/v1/authorize?${params}`);
 });
 
-router.get('/google/callback', async (req: Request, res: Response) => {
+router.get('/google/callback', (_req: Request, res: Response) => {
     const frontendUrl = process.env.FRONTEND_URL || 'https://app.tablenow.io';
     res.redirect(`${frontendUrl}/auth/callback`);
 });
 
-// ── Supabase Google OAuth token exchange ────────────────────────────────────────────
+// ── Supabase Google OAuth token exchange ───────────────────────────────────────────
 
 router.post('/google/supabase', async (req: Request, res: Response) => {
     const { access_token } = req.body;
@@ -240,41 +252,41 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
             headers: {
                 'Authorization': `Bearer ${access_token}`,
-                'apikey': process.env.SUPABASE_ANON_KEY!,
-                'Content-Type': 'application/json',
+                'apikey':        process.env.SUPABASE_ANON_KEY!,
+                'Content-Type':  'application/json',
             },
         });
         const userBody = await userRes.json() as any;
-        logger.info({ status: userRes.status, email: userBody?.email, error: userBody?.error }, 'Supabase user fetch');
+        logger.info({ status: userRes.status, email: userBody?.email }, 'Supabase user fetch');
         if (!userRes.ok) return res.status(401).json({ error: 'Invalid Supabase token', detail: userBody });
-        const supabaseUser = userBody;
-        const email = supabaseUser.email;
+
+        const email = userBody.email;
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
-        logger.info({ email }, 'Looking up restaurant by email');
-        const { data: restaurants } = await supabase.from('restaurants').select('*').eq('email', email).limit(1);
+        const { data: restaurants } = await supabase
+            .from('restaurants').select('*').eq('email', email).limit(1);
         let restaurant: any = restaurants?.[0] || null;
-        logger.info({ found: !!restaurant }, 'DB lookup');
+        logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
-            const name = supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.name || email.split('@')[0];
-            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${Date.now().toString(36)}`;
-            logger.info({ name, slug }, 'Creating restaurant');
-            const { data: newRest, error: insertErr } = await supabase.from('restaurants').insert({
-                email, name, owner_name: name,
-                google_id: supabaseUser.id, slug,
-            }).select().single();
-            logger.info({ created: !!newRest, insertErr: insertErr?.message }, 'Insert result');
+            const name = userBody.user_metadata?.full_name || userBody.user_metadata?.name || email.split('@')[0];
+            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+                || `resto-${Date.now().toString(36)}`;
+            const { data: newRest, error: insertErr } = await supabase
+                .from('restaurants')
+                .insert({ email, name, owner_name: name, google_id: userBody.id, slug })
+                .select().single();
             if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
             restaurant = newRest;
         } else if (!restaurant.slug) {
-            const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || `resto-${restaurant.id.slice(0,8)}`;
+            const slug = restaurant.name?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+                || `resto-${restaurant.id.slice(0, 8)}`;
             await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
             restaurant = { ...restaurant, slug };
         }
+
         if (!restaurant) return res.status(500).json({ error: 'Could not find or create restaurant' });
 
-        logger.info({ id: restaurant.id, slug: restaurant.slug }, 'Signing token');
         const { password: _pw, ...safeRest } = restaurant as any;
         const token = jwt.sign(
             { restaurantId: restaurant.id, email: restaurant.email },
@@ -283,22 +295,21 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         );
         res.json({ token, restaurant: safeRest });
     } catch (err: any) {
-        logger.error({ err: err?.message || err, stack: err?.stack?.slice(0,200) }, 'Supabase token exchange error');
+        logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, 'Supabase token exchange error');
         res.status(500).json({ error: 'Internal error', detail: err?.message });
     }
 });
 
-// ── Get current user ──────────────────────────────────────────────────────────────────────
+// ── Get current user ───────────────────────────────────────────────────────────────────
 
 router.get('/me', async (req: Request, res: Response) => {
     try {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader?.split(' ')[1];
+        const token = req.headers['authorization']?.split(' ')[1];
         if (!token) return res.status(401).json({ error: 'Access token required' });
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-
-        const { data: restaurant, error } = await supabase.from('restaurants').select('*').eq('id', decoded.restaurantId).single();
+        const { data: restaurant, error } = await supabase
+            .from('restaurants').select('*').eq('id', decoded.restaurantId).single();
         if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         const { password: _, ...restaurantData } = restaurant;
