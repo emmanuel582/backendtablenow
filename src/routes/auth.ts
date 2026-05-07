@@ -9,6 +9,7 @@ import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 import ragService from '../services/rag.service';
 import logger from '../lib/logger';
+import { provisionVapi } from '../lib/provisioning';
 
 const router = Router();
 
@@ -16,7 +17,7 @@ function generateSlug(name: string): string {
     return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-// ── Multer ────────────────────────────────────────────────────────────────────
+// ── Multer ────────────────────────────────────────────────────────────────────────────────
 
 const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, 'uploads/'),
@@ -36,50 +37,7 @@ const upload = multer({
     },
 });
 
-// ── Shared provisioning ───────────────────────────────────────────────────────
-// Single source of truth used by verify-email, fallback bypass, and retry-vapi.
-
-export async function provisionVapi(restaurant: {
-    id: string;
-    name: string;
-    email: string;
-    phone?: string;
-}): Promise<{
-    assistantId: string;
-    phoneNumber: string;
-    phoneId: string;
-    bccEmail: string;
-}> {
-    const log = logger.child({ restaurantId: restaurant.id, fn: 'provisionVapi' });
-    log.info('🚀 Starting VAPI provisioning');
-
-    const assistant = await vapiService.createAssistant(restaurant);
-    log.info({ assistantId: assistant.id }, '✅ Assistant created');
-
-    await supabase.from('restaurants').update({ vapi_assistant_id: assistant.id }).eq('id', restaurant.id);
-
-    const phoneNumber = await vapiService.createPhoneNumber(restaurant.id, restaurant.name);
-    log.info({ phone: phoneNumber.number, phoneId: phoneNumber.id }, '✅ Phone assigned');
-
-    await supabase.from('restaurants').update({
-        vapi_phone_id: phoneNumber.id,
-        vapi_phone_number: phoneNumber.number || phoneNumber.id,
-    }).eq('id', restaurant.id);
-
-    await vapiService.linkAssistantToPhone(phoneNumber.id, assistant.id);
-    log.info('✅ Assistant linked to phone');
-
-    const emailDomain = process.env.EMAIL_DOMAIN;
-    if (!emailDomain) throw new Error('EMAIL_DOMAIN env variable is not set');
-    const bccEmail = `bcc+r-${restaurant.id}@${emailDomain}`;
-
-    await supabase.from('restaurants').update({ bcc_email: bccEmail, status: 'active' }).eq('id', restaurant.id);
-    log.info({ bccEmail }, '✅ VAPI provisioning complete');
-
-    return { assistantId: assistant.id, phoneNumber: phoneNumber.number || phoneNumber.id, phoneId: phoneNumber.id, bccEmail };
-}
-
-// ── Register ──────────────────────────────────────────────────────────────────
+// ── Register ─────────────────────────────────────────────────────────────────────────────
 
 router.post('/register', upload.fields([
     { name: 'menu', maxCount: 1 },
@@ -155,7 +113,7 @@ router.post('/register', upload.fields([
     }
 });
 
-// ── Background RAG processing ─────────────────────────────────────────────────
+// ── Background RAG processing ───────────────────────────────────────────────────
 
 async function processDocumentsInBackground(restaurantId: string, files: { [fieldname: string]: Express.Multer.File[] }) {
     logger.info({ restaurantId }, '📚 Starting background document processing');
@@ -167,7 +125,7 @@ async function processDocumentsInBackground(restaurantId: string, files: { [fiel
     logger.info({ restaurantId }, '✅ Background document processing complete');
 }
 
-// ── Verify email ──────────────────────────────────────────────────────────────
+// ── Verify email ──────────────────────────────────────────────────────────────────────
 
 router.post('/verify-email', async (req: Request, res: Response) => {
     try {
@@ -187,7 +145,6 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         if (updateError) return res.status(500).json({ error: 'Failed to verify email' });
 
-        // Provision VAPI — non-blocking after response
         setImmediate(async () => {
             try {
                 const { phoneNumber, bccEmail } = await provisionVapi(restaurant);
@@ -229,7 +186,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
     }
 });
 
-// ── Login ─────────────────────────────────────────────────────────────────────
+// ── Login ───────────────────────────────────────────────────────────────────────────────────
 
 router.post('/login', async (req: Request, res: Response) => {
     try {
@@ -257,7 +214,7 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 });
 
-// ── Google OAuth via Supabase ─────────────────────────────────────────────────
+// ── Google OAuth via Supabase ───────────────────────────────────────────────────────
 
 router.get('/google', (req: Request, res: Response) => {
     const supabaseUrl = process.env.SUPABASE_URL!;
@@ -270,17 +227,16 @@ router.get('/google', (req: Request, res: Response) => {
 });
 
 router.get('/google/callback', async (req: Request, res: Response) => {
-    // Supabase gère le callback directement — cette route sert de fallback
     const frontendUrl = process.env.FRONTEND_URL || 'https://app.tablenow.io';
     res.redirect(`${frontendUrl}/auth/callback`);
 });
 
-// ── Supabase Google OAuth token exchange ──────────────────────────────────────
+// ── Supabase Google OAuth token exchange ────────────────────────────────────────────
+
 router.post('/google/supabase', async (req: Request, res: Response) => {
     const { access_token } = req.body;
     if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
     try {
-        // Vérifier le token Supabase — fonctionne avec JWT et tokens opaques
         const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
             headers: {
                 'Authorization': `Bearer ${access_token}`,
@@ -295,8 +251,6 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const email = supabaseUser.email;
         if (!email) return res.status(400).json({ error: 'No email in token' });
 
-        // Trouver ou créer le restaurant
-        // Chercher le restaurant — utiliser mayfail car plusieurs résultats possibles
         logger.info({ email }, 'Looking up restaurant by email');
         const { data: restaurants } = await supabase.from('restaurants').select('*').eq('email', email).limit(1);
         let restaurant: any = restaurants?.[0] || null;
@@ -334,7 +288,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
     }
 });
 
-// ── Get current user ──────────────────────────────────────────────────────────
+// ── Get current user ──────────────────────────────────────────────────────────────────────
 
 router.get('/me', async (req: Request, res: Response) => {
     try {
