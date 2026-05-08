@@ -111,9 +111,12 @@ app.listen(PORT, () => {
 });
 
 // ── Trial email cron (runs in-process, every hour) ────────────────────────────────────────────────
-checkTrialEmails().catch(err => console.error('Trial email cron startup error:', err));
-setInterval(() => {
-    checkTrialEmails().catch(err => console.error('Trial email cron error:', err));
-}, 60 * 60 * 1000);
+// Skip in development with test Supabase credentials
+if (process.env.NODE_ENV === 'production') {
+    checkTrialEmails().catch(err => console.error('Trial email cron startup error:', err));
+    setInterval(() => {
+        checkTrialEmails().catch(err => console.error('Trial email cron error:', err));
+    }, 60 * 60 * 1000);
+}
 
 export default app;
