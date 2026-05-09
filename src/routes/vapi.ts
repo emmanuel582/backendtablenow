@@ -2,8 +2,8 @@ import { Router, Request, Response } from 'express';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
-
 import calendarService from '../services/calendar.service';
+import { decrypt } from '../lib/crypto';
 
 const router = Router();
 
@@ -11,7 +11,6 @@ const router = Router();
  * Resolve restaurant_id: accepts UUID or slug, returns UUID or null
  */
 async function resolveRestaurantId(idOrSlug: string): Promise<string | null> {
-    // UUID pattern check
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
 
     if (isUuid) {
@@ -19,13 +18,10 @@ async function resolveRestaurantId(idOrSlug: string): Promise<string | null> {
         return data?.id || null;
     }
 
-    // Try slug lookup
     const { data } = await supabase.from('restaurants').select('id').eq('slug', idOrSlug).single();
     return data?.id || null;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VAPI webhook handler for call events
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/webhook', async (req: Request, res: Response) => {
     try {
@@ -61,9 +57,6 @@ router.post('/webhook', async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /assistant-config — Dynamic variable injection per call
-// VAPI calls this on each incoming call to fill {{variable}} placeholders
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/assistant-config', async (req: Request, res: Response) => {
     try {
         const phoneNumber = req.body?.message?.call?.to;
@@ -87,31 +80,30 @@ router.post('/assistant-config', async (req: Request, res: Response) => {
 
         const openingHoursFormatted = vapiService.formatOpeningHours(restaurant.opening_hours);
 
-        // Live date injection (Paris timezone)
         const now = new Date();
-        const tz = 'Europe/Paris';
+        const tz  = 'Europe/Paris';
         const fmtFull = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
         const currentDate = fmtFull.format(now);
-        const todayParts = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+        const todayParts  = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
             .formatToParts(now).reduce((a: any, p) => { a[p.type] = p.value; return a; }, {} as any);
         const currentDateISO = todayParts['year'] + '-' + todayParts['month'] + '-' + todayParts['day'];
-        const isoFmt = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+        const isoFmt   = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
         const dayFmtEN = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
-        const isoOf = (d: Date) => {
+        const isoOf    = (d: Date) => {
             const p = isoFmt.formatToParts(d).reduce((a: any, x) => { a[x.type] = x.value; return a; }, {} as any);
             return p['year'] + '-' + p['month'] + '-' + p['day'];
         };
         const seen: Record<string, number> = {};
         const parts = [
-            'tomorrow=' + isoOf(new Date(now.getTime() + 86400000)),
+            'tomorrow='          + isoOf(new Date(now.getTime() + 86400000)),
             'day_after_tomorrow=' + isoOf(new Date(now.getTime() + 172800000))
         ];
         for (let i = 1; i <= 14; i++) {
-            const d = new Date(now.getTime() + i * 86400000);
+            const d     = new Date(now.getTime() + i * 86400000);
             const dayEN = dayFmtEN.format(d).toLowerCase();
-            const iso = isoOf(d);
+            const iso   = isoOf(d);
             seen[dayEN] = (seen[dayEN] || 0) + 1;
-            const key = seen[dayEN] === 1 ? dayEN : 'next_' + dayEN;
+            const key   = seen[dayEN] === 1 ? dayEN : 'next_' + dayEN;
             parts.push(key + '=' + iso);
         }
         const nextDays = parts.join(', ');
@@ -122,10 +114,10 @@ router.post('/assistant-config', async (req: Request, res: Response) => {
             assistant: {
                 variableValues: {
                     restaurantName: restaurant.name,
-                    address: restaurant.address || '',
-                    humanPhone: restaurant.phone || '',
-                    openingHours: openingHoursFormatted,
-                    restaurantId: restaurant.id,
+                    address:        restaurant.address || '',
+                    humanPhone:     restaurant.phone   || '',
+                    openingHours:   openingHoursFormatted,
+                    restaurantId:   restaurant.id,
                     currentDate,
                     currentDateISO,
                     nextDays
@@ -139,35 +131,30 @@ router.post('/assistant-config', async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /check-availability — VAPI tool endpoint
-// Accepts both direct flat body AND VAPI tool-call wrapper format
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/check-availability', async (req: Request, res: Response) => {
     try {
-        // Extract params: flat body OR VAPI tool-call wrapper
         const { message } = req.body;
         const toolCall = message?.toolCallList?.[0] || message?.toolCalls?.[0];
         let restaurantId: string, date: string, time: string, covers: number;
 
         if (toolCall) {
             const rawArgs = toolCall.function?.arguments || toolCall.parameters || '{}';
-            const params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
-            restaurantId = params.restaurant_id;
-            date = params.date;
-            time = params.time;
-            covers = parseInt(params.covers || params.partySize, 10);
+            const params  = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+            restaurantId  = params.restaurant_id;
+            date          = params.date;
+            time          = params.time;
+            covers        = parseInt(params.covers || params.partySize, 10);
         } else {
             restaurantId = req.body.restaurant_id;
-            date = req.body.date;
-            time = req.body.time;
-            covers = parseInt(req.body.covers, 10);
+            date         = req.body.date;
+            time         = req.body.time;
+            covers       = parseInt(req.body.covers, 10);
         }
 
         if (!restaurantId || !date || !time || !covers) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        // Resolve slug to UUID if needed
         const resolvedId = await resolveRestaurantId(restaurantId);
         if (!resolvedId) {
             const payload = { available: false, message: 'Restaurant non trouvé.' };
@@ -178,7 +165,6 @@ router.post('/check-availability', async (req: Request, res: Response) => {
 
         console.log(`🔍 check-availability: ${resolvedId} — ${date} ${time} x${covers}`);
 
-        // Check closed dates
         const { data: closed } = await supabase
             .from('closed_dates')
             .select('reason')
@@ -189,18 +175,17 @@ router.post('/check-availability', async (req: Request, res: Response) => {
         if (closed) {
             const payload = {
                 available: false,
-                message: `Le restaurant est fermé le ${date}. ${closed.reason || 'Souhaitez-vous essayer une autre date ?'}`
+                message:   `Le restaurant est fermé le ${date}. ${closed.reason || 'Souhaitez-vous essayer une autre date ?'}`
             };
             return toolCall
                 ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
                 : res.json(payload);
         }
 
-        // Get available slots via RPC
         const { data: slots, error } = await supabase.rpc('get_available_slots', {
             p_restaurant_id: resolvedId,
-            p_date: date,
-            p_covers: covers
+            p_date:          date,
+            p_covers:        covers
         });
 
         if (error) {
@@ -214,7 +199,6 @@ router.post('/check-availability', async (req: Request, res: Response) => {
         const slotMatch = (slots as any[] || []).find(s => s.slot_time?.slice(0, 5) === time);
 
         if (!slotMatch || !slotMatch.available) {
-            // Find 2 alternative slots (same day, available)
             const alternatives = (slots as any[] || [])
                 .filter(s => s.available)
                 .map(s => s.slot_time?.slice(0, 5))
@@ -223,7 +207,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
 
             const payload = {
                 available: false,
-                message: slotMatch
+                message:   slotMatch
                     ? `Le créneau de ${time} est complet pour ${covers} personne${covers > 1 ? 's' : ''}.`
                     : `Pas de disponibilité à ${time} le ${date}.`,
                 alternatives
@@ -236,7 +220,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
         console.log(`✅ Available at ${time} — ${slotMatch.remaining} remaining`);
         const payload = {
             available: true,
-            message: `Le créneau du ${date} à ${time} pour ${covers} personne${covers > 1 ? 's' : ''} est disponible.`
+            message:   `Le créneau du ${date} à ${time} pour ${covers} personne${covers > 1 ? 's' : ''} est disponible.`
         };
         return toolCall
             ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
@@ -248,14 +232,10 @@ router.post('/check-availability', async (req: Request, res: Response) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /create-booking — VAPI tool endpoint
-// Accepts both direct flat body AND VAPI tool-call wrapper format
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/create-booking', async (req: Request, res: Response) => {
     try {
-        // Extract params: flat body OR VAPI tool-call wrapper
         const { message } = req.body;
-        const toolCall = message?.toolCallList?.[0] || message?.toolCalls?.[0];
+        const toolCall    = message?.toolCallList?.[0] || message?.toolCalls?.[0];
         const callerPhone = message?.call?.customer?.number;
         let restaurantId: string, date: string, time: string, covers: number;
         let firstName: string, lastName: string, guestPhone: string, guestEmail: string;
@@ -263,26 +243,26 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
         if (toolCall) {
             const rawArgs = toolCall.function?.arguments || toolCall.parameters || '{}';
-            const params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
-            restaurantId = params.restaurant_id;
-            date = params.date;
-            time = params.time;
-            covers = parseInt(params.covers || params.partySize, 10);
-            firstName = params.first_name || '';
-            lastName = params.last_name || '';
-            guestPhone = params.phone || params.guestPhone || callerPhone || '';
-            guestEmail = params.email || params.guestEmail || '';
-            language = params.language === 'en' ? 'en' : 'fr';
+            const params  = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+            restaurantId  = params.restaurant_id;
+            date          = params.date;
+            time          = params.time;
+            covers        = parseInt(params.covers || params.partySize, 10);
+            firstName     = params.first_name || '';
+            lastName      = params.last_name  || '';
+            guestPhone    = params.phone || params.guestPhone || callerPhone || '';
+            guestEmail    = params.email || params.guestEmail || '';
+            language      = params.language === 'en' ? 'en' : 'fr';
         } else {
             restaurantId = req.body.restaurant_id;
-            date = req.body.date;
-            time = req.body.time;
-            covers = parseInt(req.body.covers, 10);
-            firstName = req.body.first_name || '';
-            lastName = req.body.last_name || '';
-            guestPhone = req.body.phone || '';
-            guestEmail = req.body.email || '';
-            language = req.body.language === 'en' ? 'en' : 'fr';
+            date         = req.body.date;
+            time         = req.body.time;
+            covers       = parseInt(req.body.covers, 10);
+            firstName    = req.body.first_name || '';
+            lastName     = req.body.last_name  || '';
+            guestPhone   = req.body.phone      || '';
+            guestEmail   = req.body.email      || '';
+            language     = req.body.language === 'en' ? 'en' : 'fr';
         }
 
         if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
@@ -291,7 +271,6 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
         const guestName = `${firstName} ${lastName}`.trim();
 
-        // Resolve slug to UUID if needed
         const resolvedId = await resolveRestaurantId(restaurantId);
         if (!resolvedId) {
             const payload = { success: false, message: 'Restaurant non trouvé.' };
@@ -315,7 +294,6 @@ router.post('/create-booking', async (req: Request, res: Response) => {
                 : res.status(404).json(payload);
         }
 
-        // Find or create customer
         let customerId: string | null = null;
         if (guestPhone) {
             const { data: existing } = await supabase
@@ -336,20 +314,19 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             }
         }
 
-        // Normalize time
         const normalizedTime = normalizeTime(time) || time;
-        const bookedFor = `${date}T${normalizedTime}:00`;
+        const bookedFor      = `${date}T${normalizedTime}:00`;
 
         const { data: booking, error: insertError } = await supabase
             .from('bookings')
             .insert({
                 restaurant_id: resolvedId,
-                customer_id: customerId,
-                booked_for: bookedFor,
+                customer_id:   customerId,
+                booked_for:    bookedFor,
                 covers,
-                source: 'phone',
-                status: 'confirmed',
-                call_id: null,
+                source:        'phone',
+                status:        'confirmed',
+                call_id:       null,
                 guest_language: language
             })
             .select()
@@ -365,34 +342,37 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
         console.log(`✅ Booking created: ${booking.id}`);
 
-        // Non-blocking: Google Calendar
         if (restaurant.google_calendar_tokens) {
             setImmediate(async () => {
                 try {
-                    const tokens = JSON.parse(restaurant.google_calendar_tokens);
+                    const tokens    = JSON.parse(decrypt(restaurant.google_calendar_tokens));
                     const startTime = new Date(`${date}T${normalizedTime}:00`);
-                    const endTime = new Date(startTime.getTime() + 90 * 60000);
+                    const endTime   = new Date(startTime.getTime() + 90 * 60000);
                     const gCalEvent = await calendarService.createEvent(tokens, {
-                        summary: `[TableNow] ${guestName} — ${covers} pers.`,
+                        summary:     `[TableNow] ${guestName} — ${covers} pers.`,
                         description: `📞 ${guestPhone}\n${guestEmail ? '📧 ' + guestEmail : ''}`,
-                        start: startTime, end: endTime,
-                        attendees: guestEmail ? [guestEmail] : []
+                        start:       startTime,
+                        end:         endTime,
+                        attendees:   guestEmail ? [guestEmail] : []
                     });
                     if (gCalEvent?.id) await supabase.from('bookings').update({ google_calendar_event_id: gCalEvent.id }).eq('id', booking.id);
                 } catch (err: any) { console.error('[create-booking] Calendar:', err.message); }
             });
         }
 
-        // Non-blocking: Confirmation email (in caller's language)
         if (guestEmail) {
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name,
-                        restaurantAddress: restaurant.address || '',
-                        restaurantPhone: restaurant.phone || '',
+                        to:                  guestEmail,
+                        restaurantName:      restaurant.name,
+                        restaurantAddress:   restaurant.address || '',
+                        restaurantPhone:     restaurant.phone   || '',
                         guestName,
-                        date, time: normalizedTime, partySize: covers, confirmationNumber: booking.id,
+                        date,
+                        time:                normalizedTime,
+                        partySize:           covers,
+                        confirmationNumber:  booking.id,
                         language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
@@ -404,11 +384,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
             : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
 
-        const payload = {
-            success: true,
-            booking_id: booking.id,
-            message: successMessage
-        };
+        const payload = { success: true, booking_id: booking.id, message: successMessage };
         return toolCall
             ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
             : res.json(payload);
@@ -420,12 +396,9 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Existing event handlers (call lifecycle)
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function handleCallStarted(event: any) {
     const { call, phoneNumber } = event;
-    const phoneId = phoneNumber?.id || call?.phoneNumber?.id;
+    const phoneId  = phoneNumber?.id     || call?.phoneNumber?.id;
     const phoneNum = phoneNumber?.number || call?.phoneNumber?.number;
 
     let { data: restaurant } = await supabase
@@ -449,11 +422,11 @@ async function handleCallStarted(event: any) {
     }
 
     await supabase.from('call_logs').insert({
-        restaurant_id: restaurant.id,
-        call_id: call.id,
-        caller_number: call.customer?.number,
-        status: 'in_progress',
-        started_at: new Date().toISOString()
+        restaurant_id:  restaurant.id,
+        call_id:        call.id,
+        caller_number:  call.customer?.number,
+        status:         'in_progress',
+        started_at:     new Date().toISOString()
     });
 }
 
@@ -463,44 +436,41 @@ async function handleCallEnded(event: any) {
 
     let phoneId, phoneNum;
     if (event.type === 'end-of-call-report') {
-        phoneId = event.phoneNumber?.id || event.phone?.id;
+        phoneId  = event.phoneNumber?.id     || event.phone?.id;
         phoneNum = event.phoneNumber?.number || event.phone?.number;
         if (phoneNum && typeof phoneNum === 'object') {
             phoneNum = phoneNum.number || phoneNum.id;
         }
     } else {
-        phoneId = call?.phoneNumber?.id || call?.phone?.id;
+        phoneId  = call?.phoneNumber?.id     || call?.phone?.id;
         phoneNum = call?.phoneNumber?.number || call?.phone?.number;
     }
 
-    let rawDuration = event.durationSeconds || event.duration || call?.duration || call?.durationSeconds || 0;
-    let duration = Math.round(Number(rawDuration) || 0);
-    let finalTranscript = event.transcript || transcript || call?.transcript || '';
-    let finalRecordingUrl = event.recordingUrl || recording?.url || call?.recordingUrl || '';
-    let startedAt = event.startedAt || call?.startedAt;
-    let endedAt = event.endedAt || call?.endedAt;
+    let rawDuration       = event.durationSeconds || event.duration || call?.duration || call?.durationSeconds || 0;
+    let duration          = Math.round(Number(rawDuration) || 0);
+    let finalTranscript   = event.transcript   || transcript || call?.transcript   || '';
+    let finalRecordingUrl = event.recordingUrl  || recording?.url || call?.recordingUrl || '';
+    let startedAt         = event.startedAt || call?.startedAt;
+    let endedAt           = event.endedAt   || call?.endedAt;
 
-    // Extraction Structured Outputs VAPI
     const structuredOutputs = event.artifact?.structuredOutputs || {};
     const soValues = Object.values(structuredOutputs) as any[];
 
-    const reservationBooked = soValues.find(v => typeof v === 'boolean' && v !== null) ?? null;
-    const bookingDetails = soValues.find(v => typeof v === 'object' && v !== null && !Array.isArray(v)) ?? null;
-    const appointmentDate = bookingDetails?.date ?? null;
-    const appointmentTime = bookingDetails?.time ?? null;
-    const callSummary = soValues.find(v => typeof v === 'string' && v.length > 20) ?? null;
-    const successEvaluation = (() => {
+    const reservationBooked  = soValues.find(v => typeof v === 'boolean' && v !== null) ?? null;
+    const bookingDetails     = soValues.find(v => typeof v === 'object' && v !== null && !Array.isArray(v)) ?? null;
+    const appointmentDate    = bookingDetails?.date ?? null;
+    const appointmentTime    = bookingDetails?.time ?? null;
+    const callSummary        = soValues.find(v => typeof v === 'string' && v.length > 20) ?? null;
+    const successEvaluation  = (() => {
         const entry = Object.entries(structuredOutputs).find(([k]) => k.toLowerCase().includes('success'));
         return entry ? (entry[1] as boolean | null) : null;
     })();
-    const customerSentiment = soValues.find(v => ['positive','neutral','negative'].includes(v as string)) ?? null;
+    const customerSentiment  = soValues.find(v => ['positive','neutral','negative'].includes(v as string)) ?? null;
 
     if (!duration && startedAt && endedAt) {
         const start = new Date(startedAt).getTime();
-        const end = new Date(endedAt).getTime();
-        if (end > start) {
-            duration = Math.floor((end - start) / 1000);
-        }
+        const end   = new Date(endedAt).getTime();
+        if (end > start) duration = Math.floor((end - start) / 1000);
     }
 
     console.log('Processing call end event:', {
@@ -512,20 +482,19 @@ async function handleCallEnded(event: any) {
         const { data: updated, error: updateError } = await supabase
             .from('call_logs')
             .update({
-                status: 'completed',
+                status:              'completed',
                 duration,
-                transcript: finalTranscript,
-                recording_url: finalRecordingUrl,
-                ended_at: endedAt || new Date().toISOString(),
-                // ✅ Structured Outputs
-                reservation_booked: reservationBooked,
-                booking_details: bookingDetails,
-                appointment_date: appointmentDate,
-                appointment_time: appointmentTime,
-                call_summary: callSummary,
-                success_evaluation: successEvaluation,
-                customer_sentiment: customerSentiment,
-                raw_payload: event
+                transcript:          finalTranscript,
+                recording_url:       finalRecordingUrl,
+                ended_at:            endedAt || new Date().toISOString(),
+                reservation_booked:  reservationBooked,
+                booking_details:     bookingDetails,
+                appointment_date:    appointmentDate,
+                appointment_time:    appointmentTime,
+                call_summary:        callSummary,
+                success_evaluation:  successEvaluation,
+                customer_sentiment:  customerSentiment,
+                raw_payload:         event
             })
             .eq('call_id', callId)
             .select('id, restaurant_id');
@@ -554,28 +523,27 @@ async function handleCallEnded(event: any) {
                     : new Date(Date.now() - (duration || 0) * 1000).toISOString();
 
                 const { error: insertError } = await supabase.from('call_logs').insert({
-                    restaurant_id: restaurant.id,
-                    call_id: callId,
-                    caller_number: call?.customer?.number,
-                    status: 'completed',
+                    restaurant_id:       restaurant.id,
+                    call_id:             callId,
+                    caller_number:       call?.customer?.number,
+                    status:              'completed',
                     duration,
-                    transcript: finalTranscript,
-                    recording_url: finalRecordingUrl,
-                    started_at: finalStartedAt,
-                    ended_at: endedAt || new Date().toISOString(),
-                    // ✅ Structured Outputs
-                    reservation_booked: reservationBooked,
-                    booking_details: bookingDetails,
-                    appointment_date: appointmentDate,
-                    appointment_time: appointmentTime,
-                    call_summary: callSummary,
-                    success_evaluation: successEvaluation,
-                    customer_sentiment: customerSentiment,
-                    raw_payload: event
+                    transcript:          finalTranscript,
+                    recording_url:       finalRecordingUrl,
+                    started_at:          finalStartedAt,
+                    ended_at:            endedAt || new Date().toISOString(),
+                    reservation_booked:  reservationBooked,
+                    booking_details:     bookingDetails,
+                    appointment_date:    appointmentDate,
+                    appointment_time:    appointmentTime,
+                    call_summary:        callSummary,
+                    success_evaluation:  successEvaluation,
+                    customer_sentiment:  customerSentiment,
+                    raw_payload:         event
                 });
 
                 if (insertError) console.error('Call log insert error:', insertError);
-                else console.log('Call log cleanly inserted.');
+                else             console.log('Call log cleanly inserted.');
             } else {
                 console.error('Restaurant not found for call.ended fallback:', { phoneId, phoneNum });
             }
@@ -587,9 +555,6 @@ async function handleCallEnded(event: any) {
     }
 }
 
-/**
- * Handle function calls from VAPI (legacy single-function-call format)
- */
 async function handleFunctionCall(event: any, res: Response) {
     const { functionName, parameters, call } = event;
     const callerPhone = call?.customer?.number;
@@ -609,13 +574,10 @@ async function handleFunctionCall(event: any, res: Response) {
     return res.json(await executeFunctionCall(functionName, restaurant, parameters, callerPhone));
 }
 
-/**
- * Handle assistant-request to inject dynamic overrides (Date/Time)
- */
 async function handleAssistantRequest(event: any, res: Response) {
-    const call = event.call;
-    const phoneId = call?.phoneNumberId || event.phoneNumber?.id;
-    const phoneNum = call?.phoneNumber || event.phoneNumber?.number;
+    const call     = event.call;
+    const phoneId  = call?.phoneNumberId || event.phoneNumber?.id;
+    const phoneNum = call?.phoneNumber   || event.phoneNumber?.number;
 
     let { data: restaurant } = await supabase
         .from('restaurants')
@@ -636,21 +598,21 @@ async function handleAssistantRequest(event: any, res: Response) {
         return res.json({ error: 'Restaurant not found' });
     }
 
-    const now = new Date();
+    const now         = new Date();
     const currentDate = now.toISOString().split('T')[0];
     const currentTime = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
-    const dayOfWeek = now.toLocaleDateString('fr-FR', { weekday: 'long' });
+    const dayOfWeek   = now.toLocaleDateString('fr-FR', { weekday: 'long' });
 
     console.log(`Injecting dynamic prompt for ${restaurant.name}:`, { currentDate, currentTime, dayOfWeek });
 
-    const basePrompt = vapiService.generateSystemPrompt();
+    const basePrompt    = vapiService.generateSystemPrompt();
     const dynamicContext = `\n\nDONNÉES EN TEMPS RÉEL (NE PAS IGNORER) :\n- Date du jour : ${currentDate} (${dayOfWeek})\n- Heure actuelle : ${currentTime}\n- ID du restaurant : ${restaurant.id}\n\nUtilise ces informations pour résoudre les termes relatifs comme "demain", "ce soir", "vendredi prochain". L'année est ${now.getFullYear()}.`;
+
+    const systemPrompt = (basePrompt + dynamicContext).trim() || 'You are a helpful assistant.';
 
     return res.json({
         assistant: {
-            model: {
-                systemPrompt: basePrompt + dynamicContext
-            },
+            model: { systemPrompt },
             firstMessage: (() => {
                 const h = new Date().getHours();
                 const g = h < 18 ? 'Bonjour' : 'Bonsoir';
@@ -658,18 +620,15 @@ async function handleAssistantRequest(event: any, res: Response) {
             })(),
             variableValues: {
                 restaurantName: restaurant.name,
-                address: restaurant.address || '',
-                humanPhone: restaurant.phone || '',
-                openingHours: vapiService.formatOpeningHours(restaurant.opening_hours),
-                restaurantId: restaurant.id
+                address:        restaurant.address || '',
+                humanPhone:     restaurant.phone   || '',
+                openingHours:   vapiService.formatOpeningHours(restaurant.opening_hours),
+                restaurantId:   restaurant.id
             }
         }
     });
 }
 
-/**
- * Handle tool-calls batch from VAPI (webhook fallback)
- */
 async function handleToolCalls(event: any, res: Response) {
     try {
         const { call, toolCalls = [] } = event;
@@ -680,7 +639,7 @@ async function handleToolCalls(event: any, res: Response) {
         console.log('Received tool-calls via webhook:', JSON.stringify({ call, toolCalls }, null, 2));
 
         const assistantId = call?.assistantId || event.assistantId || event.assistant?.id;
-        const phoneId = event.phoneNumber?.id || call?.phoneNumber?.id;
+        const phoneId     = event.phoneNumber?.id || call?.phoneNumber?.id;
 
         let { data: restaurant } = await supabase
             .from('restaurants')
@@ -701,7 +660,7 @@ async function handleToolCalls(event: any, res: Response) {
             return res.json({
                 toolResults: toolCalls.map((tc: any) => ({
                     toolCallId: tc.id,
-                    result: { error: 'Restaurant not found' }
+                    result:     { error: 'Restaurant not found' }
                 }))
             });
         }
@@ -709,7 +668,7 @@ async function handleToolCalls(event: any, res: Response) {
         const toolResults: any[] = [];
         for (const tc of toolCalls) {
             const functionName = tc.function?.name || tc.name;
-            let params: any = {};
+            let params: any    = {};
             try {
                 const rawArgs = tc.function?.arguments || tc.parameters || tc.function?.input || '{}';
                 params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
@@ -725,7 +684,7 @@ async function handleToolCalls(event: any, res: Response) {
         res.json({
             toolResults,
             results: toolResults.map(tr => ({ toolCallId: tr.toolCallId, result: tr.result })),
-            result: toolResults[0]?.result
+            result:  toolResults[0]?.result
         });
     } catch (error: any) {
         console.error('VAPI tool-calls error:', error);
@@ -733,11 +692,7 @@ async function handleToolCalls(event: any, res: Response) {
     }
 }
 
-/**
- * Shared executor for function calls (webhook fallback path)
- */
 async function executeFunctionCall(functionName: string, restaurant: any, parameters: any, callerPhone?: string) {
-    // Normalize param names: covers/partySize, first_name+last_name/guestName
     const normalizedParams = { ...parameters };
     if (normalizedParams.covers && !normalizedParams.partySize) {
         normalizedParams.partySize = normalizedParams.covers;
@@ -750,23 +705,15 @@ async function executeFunctionCall(functionName: string, restaurant: any, parame
     }
 
     switch (functionName) {
-        case 'check_availability':
-            return await checkAvailability(restaurant.id, restaurant, normalizedParams);
-        case 'create_booking':
-            return await createBooking(restaurant.id, restaurant, normalizedParams, callerPhone);
-        case 'update_booking':
-            return await updateBooking(restaurant.id, restaurant, normalizedParams);
-        case 'cancel_booking':
-            return await cancelBooking(restaurant.id, restaurant, normalizedParams);
-        default:
-            return { error: 'Unknown function' };
+        case 'check_availability': return await checkAvailability(restaurant.id, restaurant, normalizedParams);
+        case 'create_booking':     return await createBooking(restaurant.id, restaurant, normalizedParams, callerPhone);
+        case 'update_booking':     return await updateBooking(restaurant.id, restaurant, normalizedParams);
+        case 'cancel_booking':     return await cancelBooking(restaurant.id, restaurant, normalizedParams);
+        default:                   return { error: 'Unknown function' };
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tool implementations (used by webhook fallback path)
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function checkAvailability(restaurantId: string, restaurant: any, params: any) {
     const { date, time, partySize } = params;
     const covers = parseInt(partySize, 10);
@@ -782,15 +729,15 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
 
         if (closed) {
             return {
-                result: 'unavailable',
+                result:  'unavailable',
                 message: `Le restaurant est fermé le ${date}. ${closed.reason || 'Souhaitez-vous essayer une autre date ?'}`
             };
         }
 
         const { data: slots, error } = await supabase.rpc('get_available_slots', {
             p_restaurant_id: restaurantId,
-            p_date: date,
-            p_covers: covers
+            p_date:          date,
+            p_covers:        covers
         });
 
         if (error) {
@@ -801,26 +748,23 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
         const slotMatch = (slots as any[] || []).find(s => s.slot_time?.slice(0, 5) === time);
 
         if (!slotMatch) {
-            return {
-                result: 'unavailable',
-                message: `Pas de disponibilité à ${time} le ${date}.`
-            };
+            return { result: 'unavailable', message: `Pas de disponibilité à ${time} le ${date}.` };
         }
 
         if (!slotMatch.available) {
             return {
-                result: 'unavailable',
+                result:    'unavailable',
                 remaining: slotMatch.remaining,
-                message: `Le créneau de ${time} est complet pour ${covers} personne${covers > 1 ? 's' : ''}.`
+                message:   `Le créneau de ${time} est complet pour ${covers} personne${covers > 1 ? 's' : ''}.`
             };
         }
 
         console.log(`✅ Available at ${time} — ${slotMatch.remaining} covers remaining`);
         return {
-            result: 'available',
+            result:    'available',
             booked_for: slotMatch.slot_datetime,
             remaining: slotMatch.remaining,
-            message: `Disponibilité confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${time}.`
+            message:   `Disponibilité confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${time}.`
         };
     } catch (err) {
         console.error('❌ Availability check failed:', err);
@@ -830,7 +774,7 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
 
 async function createBooking(restaurantId: string, restaurant: any, params: any, callerPhone?: string) {
     const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests } = params;
-    const covers = parseInt(partySize, 10);
+    const covers         = parseInt(partySize, 10);
     const normalizedTime = normalizeTime(time);
     const language: 'fr' | 'en' = params.language === 'en' ? 'en' : 'fr';
 
@@ -860,15 +804,15 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
         const { data: booking, error: insertError } = await supabase
             .from('bookings')
             .insert({
-                restaurant_id: restaurantId,
-                customer_id: customerId,
-                booked_for: bookedFor,
+                restaurant_id:   restaurantId,
+                customer_id:     customerId,
+                booked_for:      bookedFor,
                 covers,
                 special_requests: specialRequests || null,
-                source: 'vapi',
-                status: 'confirmed',
-                call_id: null,
-                guest_language: language
+                source:          'vapi',
+                status:          'confirmed',
+                call_id:         null,
+                guest_language:  language
             })
             .select()
             .single();
@@ -883,34 +827,37 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
 
         console.log(`✅ Booking created: ${booking.id} — customer: ${customerId}`);
 
-        // Non-blocking: Google Calendar
         if (restaurant.google_calendar_tokens) {
             setImmediate(async () => {
                 try {
-                    const tokens = JSON.parse(restaurant.google_calendar_tokens);
+                    const tokens    = JSON.parse(decrypt(restaurant.google_calendar_tokens));
                     const startTime = new Date(`${date}T${normalizedTime}:00`);
-                    const endTime = new Date(startTime.getTime() + 90 * 60000);
+                    const endTime   = new Date(startTime.getTime() + 90 * 60000);
                     const gCalEvent = await calendarService.createEvent(tokens, {
-                        summary: `[TableNow] ${guestName} — ${covers} pers.`,
+                        summary:     `[TableNow] ${guestName} — ${covers} pers.`,
                         description: `📞 ${guestPhone}\n${guestEmail ? '📧 ' + guestEmail : ''}`,
-                        start: startTime, end: endTime,
-                        attendees: guestEmail ? [guestEmail] : []
+                        start:       startTime,
+                        end:         endTime,
+                        attendees:   guestEmail ? [guestEmail] : []
                     });
                     if (gCalEvent?.id) await supabase.from('bookings').update({ google_calendar_event_id: gCalEvent.id }).eq('id', booking.id);
                 } catch (err: any) { console.error('[create_booking] Calendar:', err.message); }
             });
         }
 
-        // Non-blocking: Email (in caller's language)
         if (guestEmail) {
             setImmediate(async () => {
                 try {
                     await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name,
-                        restaurantAddress: restaurant.address || '',
-                        restaurantPhone: restaurant.phone || '',
+                        to:                 guestEmail,
+                        restaurantName:     restaurant.name,
+                        restaurantAddress:  restaurant.address || '',
+                        restaurantPhone:    restaurant.phone   || '',
                         guestName,
-                        date, time: normalizedTime || time, partySize: covers, confirmationNumber: booking.id,
+                        date,
+                        time:               normalizedTime || time,
+                        partySize:          covers,
+                        confirmationNumber: booking.id,
                         language
                     });
                     await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
@@ -922,11 +869,7 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
             ? `Booking confirmed for ${covers} ${covers > 1 ? 'guests' : 'guest'} on ${date} at ${normalizedTime || time} under the name ${guestName}.`
             : `Réservation confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${normalizedTime || time} au nom de ${guestName}.`;
 
-        return {
-            success: true,
-            reservation_id: booking.id,
-            message: successMessage
-        };
+        return { success: true, reservation_id: booking.id, message: successMessage };
     } catch (err: any) {
         console.error('[create_booking] Critical error:', err);
         return {
@@ -956,7 +899,7 @@ async function updateBooking(restaurantId: string, restaurant: any, params: any)
             .select()
             .single();
         booking = fallback.data as any;
-        error = fallback.error as any;
+        error   = fallback.error as any;
     }
 
     if (error || !booking) {
@@ -965,13 +908,14 @@ async function updateBooking(restaurantId: string, restaurant: any, params: any)
 
     if (restaurant.google_calendar_tokens && booking.calendar_event_id && (updates.date || updates.time)) {
         try {
-            const tokens = JSON.parse(restaurant.google_calendar_tokens);
-            const newDate = updates.date || booking.booking_date;
-            const newTime = updates.time || booking.booking_time;
+            const tokens    = JSON.parse(decrypt(restaurant.google_calendar_tokens));
+            const newDate   = updates.date || booking.booking_date;
+            const newTime   = updates.time || booking.booking_time;
             const startTime = new Date(`${newDate}T${newTime}:00`);
-            const endTime = new Date(startTime.getTime() + 90 * 60000);
+            const endTime   = new Date(startTime.getTime() + 90 * 60000);
             await calendarService.updateEvent(tokens, booking.calendar_event_id, {
-                start: startTime, end: endTime,
+                start:   startTime,
+                end:     endTime,
                 summary: `Reservation: ${booking.guest_name} (${updates.partySize || booking.party_size} pers.)`
             });
         } catch (err) {
@@ -1016,7 +960,7 @@ async function cancelBooking(restaurantId: string, restaurant: any, params: any)
 
     if (restaurant.google_calendar_tokens && booking.calendar_event_id) {
         try {
-            const tokens = JSON.parse(restaurant.google_calendar_tokens);
+            const tokens = JSON.parse(decrypt(restaurant.google_calendar_tokens));
             await calendarService.deleteEvent(tokens, booking.calendar_event_id);
         } catch (err) {
             console.error('⚠️ Google Calendar delete error:', err);
