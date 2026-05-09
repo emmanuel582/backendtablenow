@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { google } from 'googleapis';
 import ical from 'ical-generator';
 
@@ -14,19 +15,43 @@ export class CalendarService {
         return client;
     }
 
-    getAuthUrl(state: string): string {
+    /**
+     * Generate a PKCE code_verifier + code_challenge (S256).
+     * Both are generated server-side and the verifier is stored in a secure cookie
+     * so the token exchange never touches the browser.
+     */
+    generatePKCE(): { codeVerifier: string; codeChallenge: string } {
+        const codeVerifier  = crypto.randomBytes(32).toString('base64url');
+        const codeChallenge = crypto
+            .createHash('sha256')
+            .update(codeVerifier)
+            .digest('base64url');
+        return { codeVerifier, codeChallenge };
+    }
+
+    /**
+     * Build the Google OAuth authorization URL.
+     * codeChallenge is the S256 hash of codeVerifier — never exposed to the browser.
+     */
+    getAuthUrl(state: string, codeChallenge: string): string {
         const client = this.createClient();
         return client.generateAuthUrl({
-            access_type: 'offline',
-            prompt: 'consent',
-            scope: ['https://www.googleapis.com/auth/calendar'],
+            access_type:           'offline',
+            prompt:                'consent',
+            scope:                 ['https://www.googleapis.com/auth/calendar'],
             state,
+            code_challenge:        codeChallenge,
+            code_challenge_method: 'S256',
         });
     }
 
-    async getTokensFromCode(code: string): Promise<any> {
+    /**
+     * Exchange the authorization code for tokens server-side.
+     * codeVerifier must match what was used to derive the code_challenge.
+     */
+    async getTokensFromCode(code: string, codeVerifier: string): Promise<any> {
         const client = this.createClient();
-        const { tokens } = await client.getToken(code);
+        const { tokens } = await client.getToken({ code, codeVerifier });
         return tokens;
     }
 
@@ -37,17 +62,17 @@ export class CalendarService {
         end: Date;
         attendees?: string[];
     }): Promise<any> {
-        const client = this.createClient(tokens);
+        const client   = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
 
         const response = await calendar.events.insert({
-            calendarId: 'primary',
+            calendarId:  'primary',
             requestBody: {
-                summary: eventData.summary,
+                summary:     eventData.summary,
                 description: eventData.description,
-                start: { dateTime: eventData.start.toISOString(), timeZone: TZ },
-                end:   { dateTime: eventData.end.toISOString(),   timeZone: TZ },
-                attendees: eventData.attendees?.map(email => ({ email })),
+                start:       { dateTime: eventData.start.toISOString(), timeZone: TZ },
+                end:         { dateTime: eventData.end.toISOString(),   timeZone: TZ },
+                attendees:   eventData.attendees?.map(email => ({ email })),
                 reminders: {
                     useDefault: false,
                     overrides: [
@@ -67,7 +92,7 @@ export class CalendarService {
         start?: Date;
         end?: Date;
     }): Promise<any> {
-        const client = this.createClient(tokens);
+        const client   = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
 
         const patch: any = {};
@@ -86,20 +111,20 @@ export class CalendarService {
     }
 
     async deleteEvent(tokens: any, eventId: string): Promise<void> {
-        const client = this.createClient(tokens);
+        const client   = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
         await calendar.events.delete({ calendarId: 'primary', eventId });
     }
 
     async checkAvailability(tokens: any, startTime: Date, endTime: Date): Promise<boolean> {
-        const client = this.createClient(tokens);
+        const client   = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
 
         const response = await calendar.freebusy.query({
             requestBody: {
                 timeMin: startTime.toISOString(),
                 timeMax: endTime.toISOString(),
-                items: [{ id: 'primary' }],
+                items:   [{ id: 'primary' }],
             },
         });
 
@@ -108,7 +133,7 @@ export class CalendarService {
     }
 
     async findAvailableSlots(tokens: any, date: Date): Promise<string[]> {
-        const client = this.createClient(tokens);
+        const client   = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
 
         const startOfDay = new Date(date);
@@ -120,17 +145,17 @@ export class CalendarService {
             requestBody: {
                 timeMin: startOfDay.toISOString(),
                 timeMax: endOfDay.toISOString(),
-                items: [{ id: 'primary' }],
+                items:   [{ id: 'primary' }],
             },
         });
 
-        const busySlots = response.data.calendars?.primary?.busy || [];
+        const busySlots      = response.data.calendars?.primary?.busy || [];
         const availableSlots: string[] = [];
-        let currentSlot = new Date(startOfDay);
+        let currentSlot      = new Date(startOfDay);
 
         while (currentSlot < endOfDay) {
             const endSlot = new Date(currentSlot.getTime() + 3600000);
-            const isBusy = busySlots.some((busy: any) => {
+            const isBusy  = busySlots.some((busy: any) => {
                 const busyStart = new Date(busy.start!);
                 const busyEnd   = new Date(busy.end!);
                 return currentSlot < busyEnd && endSlot > busyStart;
@@ -155,11 +180,11 @@ export class CalendarService {
     }): string {
         const calendar = ical({ name: 'TableNow Booking' });
         calendar.createEvent({
-            start: eventData.start,
-            end: eventData.end,
-            summary: eventData.summary,
+            start:       eventData.start,
+            end:         eventData.end,
+            summary:     eventData.summary,
             description: eventData.description,
-            location: eventData.location,
+            location:    eventData.location,
         });
         return calendar.toString();
     }
