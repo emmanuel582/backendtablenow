@@ -55,8 +55,8 @@ router.post('/create-checkout-session', authenticateToken, async (req: AuthReque
             line_items:           [{ price: PRICE_IDS[plan], quantity: 1 }],
             mode:                 'subscription',
             subscription_data:    { trial_period_days: 7 },
-            success_url:          `https://app.tablenow.io/r/${restaurant.slug}/dashboard?subscribed=true`,
-            cancel_url:           `https://app.tablenow.io/pricing`,
+            success_url:          `https://app.tablenow.io/setup/restaurant?checkout=success`,
+            cancel_url:           `https://app.tablenow.io/setup/plan?checkout=cancelled`,
             locale:               'fr',
         });
 
