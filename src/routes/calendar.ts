@@ -14,27 +14,30 @@ const router = Router();
 router.get('/callback', (req: any, res: Response) => {
     const { code, error, state } = req.query;
     const frontendUrl = config.frontendUrl;
+    const returnTo = req.cookies?.oauth_return_to ?? 'settings';
+    const redirectPath = returnTo === 'setup' ? '/setup/calendar' : '/settings';
 
     if (error) {
-        return res.redirect(`${frontendUrl}/settings?error=${error}`);
+        return res.redirect(`${frontendUrl}${redirectPath}?error=${error}`);
     }
 
     if (!code) {
-        return res.redirect(`${frontendUrl}/settings?error=no_code`);
+        return res.redirect(`${frontendUrl}${redirectPath}?error=no_code`);
     }
 
     // Verify CSRF state token
     const cookieState = req.cookies?.oauth_state;
     if (!state || !cookieState || state !== cookieState) {
         console.error('OAuth state mismatch — possible CSRF', { state, cookieState });
-        return res.redirect(`${frontendUrl}/settings?error=state_mismatch`);
+        return res.redirect(`${frontendUrl}${redirectPath}?error=state_mismatch`);
     }
 
-    // Clear the state cookie
+    // Clear the state and return_to cookies
     res.clearCookie('oauth_state');
+    res.clearCookie('oauth_return_to');
 
     // Redirect to frontend with code, where it will be exchanged via POST
-    res.redirect(`${frontendUrl}/settings?code=${code}`);
+    res.redirect(`${frontendUrl}${redirectPath}?code=${code}`);
 });
 
 router.use(authenticateToken);
@@ -44,10 +47,17 @@ router.use(authenticateToken);
  */
 router.get('/auth-url', (req: AuthRequest, res: Response) => {
     try {
+        const returnTo = req.query.return_to === 'setup' ? 'setup' : 'settings';
         const state = crypto.randomBytes(32).toString('hex');
 
-        // Store state in httpOnly cookie (expires in 10 min)
+        // Store state and return_to in httpOnly cookies (expires in 10 min)
         res.cookie('oauth_state', state, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            maxAge: 10 * 60 * 1000
+        });
+        res.cookie('oauth_return_to', returnTo, {
             httpOnly: true,
             secure: true,
             sameSite: 'none',
