@@ -54,13 +54,13 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
         res.cookie('oauth_state', state, {
             httpOnly: true,
             secure: true,
-            sameSite: 'none',
+            sameSite: 'lax',
             maxAge: 10 * 60 * 1000
         });
         res.cookie('oauth_return_to', returnTo, {
             httpOnly: true,
             secure: true,
-            sameSite: 'none',
+            sameSite: 'lax',
             maxAge: 10 * 60 * 1000
         });
 
