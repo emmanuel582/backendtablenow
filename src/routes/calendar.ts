@@ -81,13 +81,35 @@ router.post('/callback', async (req: AuthRequest, res: Response) => {
         // Store tokens in database
         await supabase
             .from('restaurants')
-            .update({ google_calendar_tokens: JSON.stringify(tokens) })
+            .update({
+                google_calendar_tokens: JSON.stringify(tokens),
+                calendar_status: 'connected'
+            })
             .eq('id', restaurantId);
 
-        res.json({ message: 'Calendar connected successfully' });
+        res.json({ message: 'Calendar connected successfully', calendar_status: 'connected' });
     } catch (error: any) {
         console.error('Calendar callback error:', error);
         res.status(500).json({ error: 'Failed to connect calendar' });
+    }
+});
+
+/**
+ * Skip calendar setup during onboarding
+ */
+router.post('/skip', async (req: AuthRequest, res: Response) => {
+    try {
+        const restaurantId = req.user!.restaurantId;
+
+        await supabase
+            .from('restaurants')
+            .update({ calendar_status: 'skipped' })
+            .eq('id', restaurantId);
+
+        res.json({ success: true, calendar_status: 'skipped' });
+    } catch (error: any) {
+        console.error('Calendar skip error:', error);
+        res.status(500).json({ error: 'Failed to skip calendar setup' });
     }
 });
 
@@ -100,10 +122,13 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
 
         await supabase
             .from('restaurants')
-            .update({ google_calendar_tokens: null })
+            .update({
+                google_calendar_tokens: null,
+                calendar_status: 'pending'
+            })
             .eq('id', restaurantId);
 
-        res.json({ message: 'Calendar disconnected successfully' });
+        res.json({ message: 'Calendar disconnected successfully', calendar_status: 'pending' });
     } catch (error: any) {
         console.error('Calendar disconnect error:', error);
         res.status(500).json({ error: 'Failed to disconnect calendar' });

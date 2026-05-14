@@ -152,7 +152,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
 
-        const { password: _, verification_token: __, ...restaurantData } = restaurant;
+        const { password: _, verification_token: __, google_calendar_tokens: ___, ...restaurantData } = restaurant;
 
         // Already verified — still return JWT + restaurant so the user can auto-login
         if (restaurant.is_verified) {
@@ -251,7 +251,7 @@ router.post('/login', async (req: Request, res: Response) => {
             { expiresIn: '30d' }
         );
 
-        const { password: _, ...restaurantData } = restaurant;
+        const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
         res.json({ token, restaurant: restaurantData });
     } catch (error: any) {
         logger.error({ error }, 'Login error');
@@ -334,7 +334,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
                 }
             });
 
-            const { password: _pw, ...safeRest } = createdRestaurant as any;
+            const { password: _pw, google_calendar_tokens: _gct, ...safeRest } = createdRestaurant as any;
             const token = jwt.sign(
                 { id: createdRestaurant.id, email: createdRestaurant.email, restaurantId: createdRestaurant.id },
                 process.env.JWT_SECRET!,
@@ -359,7 +359,7 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 
         // Existing restaurant — return login data with google_profile for optional prefill
         logger.info({ id: restaurant.id, slug: restaurant.slug }, 'Existing user login');
-        const { password: _pw, ...safeRest } = restaurant as any;
+        const { password: _pw, google_calendar_tokens: _gct, ...safeRest } = restaurant as any;
         const token = jwt.sign(
             { id: restaurant.id, email: restaurant.email, restaurantId: restaurant.id },
             process.env.JWT_SECRET!,
@@ -391,7 +391,7 @@ router.get('/me', async (req: Request, res: Response) => {
         );
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
-        const { password: _, ...restaurantData } = restaurant;
+        const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
         res.json({ restaurant: restaurantData });
     } catch (error: any) {
         logger.error({ error }, 'Get user error');
