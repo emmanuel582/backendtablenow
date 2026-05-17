@@ -391,7 +391,7 @@ router.get('/me', async (req: Request, res: Response) => {
         );
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
-        const { password: _, ...restaurantData } = restaurant;
+        const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
         res.json({ restaurant: restaurantData });
     } catch (error: any) {
         logger.error({ error }, 'Get user error');
