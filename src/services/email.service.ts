@@ -1,6 +1,5 @@
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
-import logger from '../lib/logger';
 
 // ── Fail fast if SMTP env is missing — never fall back to hardcoded credentials
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -92,9 +91,20 @@ export class EmailService {
   </div>
 </body></html>`,
             });
-            logger.info({ to, template: 'verification', trigger: 'register', messageId: info.messageId }, '📧 Verification email sent');
+
+            console.log(JSON.stringify({
+                recipient: to,
+                template: 'verification',
+                trigger: 'register',
+                messageId: info.messageId,
+            }));
         } catch (error) {
-            logger.error({ to, template: 'verification', trigger: 'register', error }, '❌ Verification email failed');
+            console.error(JSON.stringify({
+                recipient: to,
+                template: 'verification',
+                trigger: 'register',
+                error: error instanceof Error ? error.message : String(error),
+            }));
             throw error;
         }
     }
@@ -162,13 +172,22 @@ export class EmailService {
   </div>
 </body></html>`,
             });
-            logger.info({ to: data.to, template: 'booking_confirmation', trigger: 'booking_created', confirmationNumber, messageId: info.messageId }, '📧 Booking confirmation email sent');
+
+            console.log(JSON.stringify({
+                recipient: data.to,
+                template: 'booking_confirmation',
+                trigger: 'booking_created',
+                messageId: info.messageId,
+            }));
         } catch (error) {
-            logger.error({ to: data.to, template: 'booking_confirmation', trigger: 'booking_created', confirmationNumber, error }, '❌ Booking confirmation email failed');
+            console.error(JSON.stringify({
+                recipient: data.to,
+                template: 'booking_confirmation',
+                trigger: 'booking_created',
+                error: error instanceof Error ? error.message : String(error),
+            }));
             throw error;
         }
-
-        console.log(`Booking confirmation sent to ${data.to}`);
     }
 
     /**
@@ -179,8 +198,10 @@ export class EmailService {
         subject: string;
         message: string;
         bookingDetails?: any;
+        trigger?: 'provisioning' | 'vapi' | 'booking_created';
     }): Promise<void> {
         const b = data.bookingDetails || {};
+        const trigger = data.trigger || 'provisioning';
         const bookingSummary = b && Object.keys(b).length > 0 ? `
       <h4>Détails de la réservation</h4>
       <ul style="padding-left:16px; line-height:1.6;">
@@ -231,9 +252,20 @@ export class EmailService {
         </html>
       `,
             });
-            logger.info({ to: data.to, subject: data.subject, template: 'notification', trigger: 'provisioning|vapi', messageId: info.messageId }, '📧 Restaurant notification sent');
+
+            console.log(JSON.stringify({
+                recipient: data.to,
+                template: 'notification',
+                trigger,
+                messageId: info.messageId,
+            }));
         } catch (error) {
-            logger.error({ to: data.to, subject: data.subject, template: 'notification', error }, '❌ Restaurant notification failed');
+            console.error(JSON.stringify({
+                recipient: data.to,
+                template: 'notification',
+                trigger,
+                error: error instanceof Error ? error.message : String(error),
+            }));
             throw error;
         }
     }
@@ -291,15 +323,33 @@ export class EmailService {
         subject: string;
         html?: string;
         text?: string;
+        trigger?: 'trial' | 'cron' | 'manual';
     }): Promise<void> {
+        const trigger = options.trigger || 'manual';
+        const recipient = Array.isArray(options.to) ? options.to[0] : options.to;
+
         try {
             const info = await this.transporter.sendMail({
                 from: `TableNow <${this.fromEmail}>`,
-                ...options,
+                to: options.to,
+                subject: options.subject,
+                html: options.html,
+                text: options.text,
             });
-            logger.info({ to: options.to, subject: options.subject, template: 'raw', trigger: 'trial|cron', messageId: info.messageId }, '📧 Raw email sent');
+
+            console.log(JSON.stringify({
+                recipient,
+                template: 'raw',
+                trigger,
+                messageId: info.messageId,
+            }));
         } catch (error) {
-            logger.error({ to: options.to, subject: options.subject, template: 'raw', error }, '❌ Raw email failed');
+            console.error(JSON.stringify({
+                recipient,
+                template: 'raw',
+                trigger,
+                error: error instanceof Error ? error.message : String(error),
+            }));
             throw error;
         }
     }
