@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { supabase } from '../lib/supabase';
+import supabase from '../config/supabase';
 
 export interface AuthRequest extends Request {
     user?: {

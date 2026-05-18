@@ -12,6 +12,32 @@ import provisioningService from '../services/provisioning.service';
 import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
+interface Restaurant {
+  id: string;
+  email: string;
+  password?: string | null;
+  name: string;
+  owner_name: string;
+  phone?: string | null;
+  address?: string | null;
+  cuisine_type?: string | null;
+  opening_hours?: any;
+  special_features?: string | null;
+  faq_text?: string | null;
+  menu_url?: string | null;
+  faq_document_url?: string | null;
+  policies_url?: string | null;
+  verification_token?: string | null;
+  is_verified: boolean;
+  status: string;
+  slug?: string | null;
+  google_id?: string | null;
+  google_calendar_tokens?: any;
+  confirmation_email?: string | null;
+  supabase_user_id?: string | null;
+  [key: string]: any;
+}
+
 const router = Router();
 
 // ── Multer ────────────────────────────────────────────────────────────────────────────────
@@ -146,7 +172,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         const { token } = req.body;
         if (!token) return res.status(400).json({ error: 'Verification token required' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
+        const { data: restaurant, error: findError } = await safeSingle<Restaurant>(
             supabase.from('restaurants').select('*').eq('verification_token', token),
             'verify-email: find token'
         );
@@ -179,7 +205,7 @@ router.post('/verify-email', async (req: Request, res: Response) => {
 
         setImmediate(async () => {
             try {
-                const { phoneNumber, bccEmail } = await provisioningService.provision(restaurant);
+                const { phoneNumber, bccEmail } = await provisioningService.provision(restaurant as any);
                 await emailService.sendRestaurantNotification({
                     to:      restaurant.email,
                     subject: '🎉 Votre compte TableNow est prêt !',
@@ -236,14 +262,14 @@ router.post('/login', async (req: Request, res: Response) => {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
+        const { data: restaurant, error: findError } = await safeSingle<Restaurant>(
             supabase.from('restaurants').select('*').eq('email', email),
             'login: find by email'
         );
         if (findError || !restaurant) return res.status(401).json({ error: 'Invalid credentials' });
         if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
 
-        const isValidPassword = await bcrypt.compare(password, restaurant.password);
+        const isValidPassword = await bcrypt.compare(password, restaurant.password || '');
         if (!isValidPassword) return res.status(401).json({ error: 'Invalid credentials' });
 
         const token = jwt.sign(
@@ -298,11 +324,13 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const googlePhoto = userBody.user_metadata?.avatar_url || userBody.user_metadata?.picture || null;
         const googleId = userBody.id;
 
-        const { data: restaurant, error: lookupError } = await safeSingle(
+        let restaurant: Restaurant | null = null;
+        const { data: foundRestaurant, error: lookupError } = await safeSingle<Restaurant>(
             supabase.from('restaurants').select('*').eq('email', email),
             'google/supabase: find by email'
         );
         if (lookupError) return res.status(500).json({ error: 'Database error', detail: lookupError });
+        restaurant = foundRestaurant;
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
@@ -385,7 +413,7 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
         const restaurantId = req.user?.restaurantId;
         if (!restaurantId) return res.status(403).json({ error: 'Restaurant not found' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
+        const { data: restaurant, error: findError } = await safeSingle<Restaurant>(
             supabase.from('restaurants').select('*').eq('id', restaurantId),
             'me: find by id'
         );

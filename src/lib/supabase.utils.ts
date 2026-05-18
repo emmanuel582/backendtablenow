@@ -7,7 +7,7 @@ export interface SafeSingleResult<T> {
 }
 
 export async function safeSingle<T>(
-  query: Promise<{ data: T[] | null; error: any }>,
+  query: Promise<{ data: T[] | null; error: any }> | PromiseLike<{ data: T[] | null; error: any }>,
   context: string
 ): Promise<SafeSingleResult<T>> {
   try {
