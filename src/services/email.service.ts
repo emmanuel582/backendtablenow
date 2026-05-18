@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
+import logger from '../lib/logger';
 
 // ── Fail fast if SMTP env is missing — never fall back to hardcoded credentials
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -45,11 +46,12 @@ export class EmailService {
     async sendVerificationEmail(to: string, verificationToken: string, _restaurantName: string): Promise<void> {
         const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
-        await this.transporter.sendMail({
-            from: `TableNow <${this.fromEmail}>`,
-            to,
-            subject: 'Vérifiez votre compte TableNow',
-            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+        try {
+            const info = await this.transporter.sendMail({
+                from: `TableNow <${this.fromEmail}>`,
+                to,
+                subject: 'Vérifiez votre compte TableNow',
+                html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#0a0a0a;font-family:Arial,sans-serif">
   <div style="max-width:560px;margin:40px auto;background:#0a0a0a;border-radius:12px;overflow:hidden">
     <div style="padding:32px 32px 0;text-align:center">
@@ -89,9 +91,12 @@ export class EmailService {
     </div>
   </div>
 </body></html>`,
-        });
-
-        console.log(`Verification email sent to ${to}`);
+            });
+            logger.info({ to, template: 'verification', trigger: 'register', messageId: info.messageId }, '📧 Verification email sent');
+        } catch (error) {
+            logger.error({ to, template: 'verification', trigger: 'register', error }, '❌ Verification email failed');
+            throw error;
+        }
     }
 
     /**
@@ -126,11 +131,12 @@ export class EmailService {
         const restaurantAddress = data.restaurantAddress || '';
         const restaurantPhone   = data.restaurantPhone   || '';
 
-        await this.transporter.sendMail({
-            from: `TableNow <${this.fromEmail}>`,
-            to: data.to,
-            subject: `Réservation confirmée — ${data.restaurantName}`,
-            html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+        try {
+            const info = await this.transporter.sendMail({
+                from: `TableNow <${this.fromEmail}>`,
+                to: data.to,
+                subject: `Réservation confirmée — ${data.restaurantName}`,
+                html: `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
 <body style="margin:0;padding:0;background:#0a0a0a;font-family:Arial,sans-serif">
   <div style="max-width:560px;margin:40px auto;background:#0a0a0a;border-radius:12px;overflow:hidden">
     <div style="padding:32px 32px 0;text-align:center">
@@ -155,7 +161,12 @@ export class EmailService {
     </div>
   </div>
 </body></html>`,
-        });
+            });
+            logger.info({ to: data.to, template: 'booking_confirmation', trigger: 'booking_created', confirmationNumber, messageId: info.messageId }, '📧 Booking confirmation email sent');
+        } catch (error) {
+            logger.error({ to: data.to, template: 'booking_confirmation', trigger: 'booking_created', confirmationNumber, error }, '❌ Booking confirmation email failed');
+            throw error;
+        }
 
         console.log(`Booking confirmation sent to ${data.to}`);
     }
@@ -185,11 +196,12 @@ export class EmailService {
       </ul>
     ` : '';
 
-        await this.transporter.sendMail({
-            from: `TableNow <${this.fromEmail}>`,
-            to: data.to,
-            subject: `TableNow — ${data.subject}`,
-            html: `
+        try {
+            const info = await this.transporter.sendMail({
+                from: `TableNow <${this.fromEmail}>`,
+                to: data.to,
+                subject: `TableNow — ${data.subject}`,
+                html: `
         <!DOCTYPE html>
         <html>
         <head>
@@ -218,9 +230,12 @@ export class EmailService {
         </body>
         </html>
       `,
-        });
-
-        console.log(`Restaurant notification sent to ${data.to}`);
+            });
+            logger.info({ to: data.to, subject: data.subject, template: 'notification', trigger: 'provisioning|vapi', messageId: info.messageId }, '📧 Restaurant notification sent');
+        } catch (error) {
+            logger.error({ to: data.to, subject: data.subject, template: 'notification', error }, '❌ Restaurant notification failed');
+            throw error;
+        }
     }
 
     /**
@@ -277,10 +292,16 @@ export class EmailService {
         html?: string;
         text?: string;
     }): Promise<void> {
-        await this.transporter.sendMail({
-            from: `TableNow <${this.fromEmail}>`,
-            ...options,
-        });
+        try {
+            const info = await this.transporter.sendMail({
+                from: `TableNow <${this.fromEmail}>`,
+                ...options,
+            });
+            logger.info({ to: options.to, subject: options.subject, template: 'raw', trigger: 'trial|cron', messageId: info.messageId }, '📧 Raw email sent');
+        } catch (error) {
+            logger.error({ to: options.to, subject: options.subject, template: 'raw', error }, '❌ Raw email failed');
+            throw error;
+        }
     }
 }
 
