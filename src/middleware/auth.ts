@@ -19,29 +19,51 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
 
     try {
-        // Verify Supabase JWT using the public key
-        const decoded = jwt.decode(token, { complete: true }) as any;
-
-        if (!decoded) {
-            return res.status(403).json({ error: 'Invalid token format' });
-        }
-
-        // Get the Supabase user using the token
+        // Verify Supabase JWT
         const { data: { user: supabaseUser }, error: authError } = await supabase.auth.getUser(token);
 
         if (authError || !supabaseUser) {
             return res.status(403).json({ error: 'Invalid or expired token' });
         }
 
-        // Find restaurant linked to this Supabase user
-        const { data: restaurant, error: restaurantError } = await supabase
+        let restaurant;
+
+        // 1. Try to find restaurant by existing supabase_user_id link
+        const { data: linkedRestaurant, error: linkedError } = await supabase
             .from('restaurants')
             .select('id')
             .eq('supabase_user_id', supabaseUser.id)
             .single();
 
-        if (restaurantError || !restaurant) {
-            return res.status(403).json({ error: 'Restaurant not found for user' });
+        if (linkedRestaurant) {
+            restaurant = linkedRestaurant;
+        } else if (!linkedError || linkedError.code === 'PGRST116') {
+            // PGRST116 = no rows found (normal case)
+            // Try to find unlinked restaurant by email match
+            const userEmail = supabaseUser.email || '';
+
+            const { data: emailMatchRestaurant, error: emailError } = await supabase
+                .from('restaurants')
+                .select('id')
+                .or(`email.eq.${userEmail},confirmation_email.eq.${userEmail}`)
+                .is('supabase_user_id', null)
+                .single();
+
+            if (emailMatchRestaurant) {
+                // Auto-link: update this restaurant with the Supabase user_id
+                const { error: updateError } = await supabase
+                    .from('restaurants')
+                    .update({ supabase_user_id: supabaseUser.id })
+                    .eq('id', emailMatchRestaurant.id);
+
+                if (!updateError) {
+                    restaurant = emailMatchRestaurant;
+                }
+            }
+        }
+
+        if (!restaurant) {
+            return res.status(403).json({ error: 'Restaurant not linked to Supabase user' });
         }
 
         // Inject user info into request
