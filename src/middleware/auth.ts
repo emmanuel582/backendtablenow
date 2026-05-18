@@ -39,6 +39,11 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             restaurant = linkedRestaurant;
         } else if (!linkedError || linkedError.code === 'PGRST116') {
             // PGRST116 = no rows found (normal case)
+            // Only allow auto-link if email is verified
+            if (!supabaseUser.email_confirmed_at) {
+                return res.status(403).json({ error: 'Email must be verified to link restaurant' });
+            }
+
             // Try to find unlinked restaurant by email match
             const userEmail = supabaseUser.email || '';
 
