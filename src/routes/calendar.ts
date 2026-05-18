@@ -159,6 +159,7 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
                 google_calendar_tokens: null,
                 calendar_status: 'pending',
                 calendar_provider: null,
+                calendar_skipped_at: null,
             })
             .eq('id', restaurantId);
 
@@ -170,7 +171,8 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
         res.json({
             success: true,
             calendar_status: 'pending',
-            calendar_provider: null
+            calendar_provider: null,
+            calendar_skipped_at: null
         });
     } catch (error: any) {
         console.error('Calendar disconnect error:', error);
