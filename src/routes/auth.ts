@@ -9,7 +9,7 @@ import emailService from '../services/email.service';
 import ragService from '../services/rag.service';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
-import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
+import { generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
 const router = Router();
@@ -51,21 +51,23 @@ router.post('/register', upload.fields([
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        const { data: existingUser, error: emailError } = await safeSingle(
-            supabase.from('restaurants').select('id').eq('email', email),
-            'register: check email'
-        );
-        if (emailError || existingUser) return res.status(409).json({ error: 'Email already registered' });
+        const { data: existingUser, error: emailError } = await supabase
+            .from('restaurants')
+            .select('id')
+            .eq('email', email)
+            .single();
+        if (existingUser) return res.status(409).json({ error: 'Email already registered' });
 
         const hashedPassword    = await bcrypt.hash(password, 10);
         const verificationToken = uuidv4();
 
         let slug = generateUniqueSlug(restaurantName);
-        const { data: existingSlug, isDuplicate: slugExists } = await safeSingle(
-            supabase.from('restaurants').select('id').eq('slug', slug),
-            'register: check slug'
-        );
-        if (existingSlug || slugExists) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
+        const { data: existingSlug, error: slugError } = await supabase
+            .from('restaurants')
+            .select('id')
+            .eq('slug', slug)
+            .single();
+        if (existingSlug) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
 
         const files = req.files as { [fieldname: string]: Express.Multer.File[] };
         const documents: Record<string, string> = {};
@@ -146,10 +148,11 @@ router.post('/verify-email', async (req: Request, res: Response) => {
         const { token } = req.body;
         if (!token) return res.status(400).json({ error: 'Verification token required' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
-            supabase.from('restaurants').select('*').eq('verification_token', token),
-            'verify-email: find token'
-        );
+        const { data: restaurant, error: findError } = await supabase
+            .from('restaurants')
+            .select('*')
+            .eq('verification_token', token)
+            .single();
 
         if (findError || !restaurant) return res.status(404).json({ error: 'Invalid verification token' });
 
@@ -236,10 +239,11 @@ router.post('/login', async (req: Request, res: Response) => {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
-            'login: find by email'
-        );
+        const { data: restaurant, error: findError } = await supabase
+            .from('restaurants')
+            .select('*')
+            .eq('email', email)
+            .single();
         if (findError || !restaurant) return res.status(401).json({ error: 'Invalid credentials' });
         if (!restaurant.is_verified)  return res.status(403).json({ error: 'Please verify your email first' });
 
@@ -298,22 +302,24 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
         const googlePhoto = userBody.user_metadata?.avatar_url || userBody.user_metadata?.picture || null;
         const googleId = userBody.id;
 
-        const { data: restaurant, error: lookupError } = await safeSingle(
-            supabase.from('restaurants').select('*').eq('email', email),
-            'google/supabase: find by email'
-        );
-        if (lookupError) return res.status(500).json({ error: 'Database error', detail: lookupError });
+        let { data: restaurant, error: lookupError } = await supabase
+            .from('restaurants')
+            .select('*')
+            .eq('email', email)
+            .single();
+        if (lookupError && lookupError.code !== 'PGRST116') return res.status(500).json({ error: 'Database error', detail: lookupError });
         logger.info({ found: !!restaurant, email }, 'DB lookup');
 
         if (!restaurant) {
             const name = googleName;
             let slug = generateUniqueSlug(name);
 
-            const { data: existingSlug, isDuplicate } = await safeSingle(
-                supabase.from('restaurants').select('id').eq('slug', slug),
-                'google/supabase: check slug'
-            );
-            if (existingSlug || isDuplicate) {
+            const { data: existingSlug, error: slugCheckError } = await supabase
+                .from('restaurants')
+                .select('id')
+                .eq('slug', slug)
+                .single();
+            if (existingSlug) {
                 slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
             }
 
@@ -385,10 +391,11 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
         const restaurantId = req.user?.restaurantId;
         if (!restaurantId) return res.status(403).json({ error: 'Restaurant not found' });
 
-        const { data: restaurant, error: findError } = await safeSingle(
-            supabase.from('restaurants').select('*').eq('id', restaurantId),
-            'me: find by id'
-        );
+        const { data: restaurant, error: findError } = await supabase
+            .from('restaurants')
+            .select('*')
+            .eq('id', restaurantId)
+            .single();
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
