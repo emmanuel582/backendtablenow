@@ -10,6 +10,7 @@ import ragService from '../services/rag.service';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
 import { safeSingle, generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
+import { authenticateToken, AuthRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -379,20 +380,19 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 
 // ── Get current user ───────────────────────────────────────────────────────────────────
 
-router.get('/me', async (req: Request, res: Response) => {
+router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
-        const token = req.headers['authorization']?.split(' ')[1];
-        if (!token) return res.status(401).json({ error: 'Access token required' });
+        const restaurantId = req.user?.restaurantId;
+        if (!restaurantId) return res.status(403).json({ error: 'Restaurant not found' });
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
         const { data: restaurant, error: findError } = await safeSingle(
-            supabase.from('restaurants').select('*').eq('id', decoded.restaurantId || decoded.id),
+            supabase.from('restaurants').select('*').eq('id', restaurantId),
             'me: find by id'
         );
         if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
 
         const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
-        res.json({ restaurant: restaurantData });
+        res.json(restaurantData);
     } catch (error: any) {
         logger.error({ error }, 'Get user error');
         res.status(403).json({ error: 'Invalid token' });
