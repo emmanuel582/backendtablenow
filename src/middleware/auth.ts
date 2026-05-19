@@ -26,18 +26,22 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             return res.status(403).json({ error: 'Invalid or expired token' });
         }
 
+        console.log('[Auth] User ID:', supabaseUser.id, 'Email:', supabaseUser.email);
+
         let restaurant;
 
         // 1. Try to find restaurant by existing supabase_user_id link
         const { data: linkedRestaurant, error: linkedError } = await supabase
             .from('restaurants')
-            .select('id')
+            .select('*')
             .eq('supabase_user_id', supabaseUser.id)
             .single();
 
+        console.log('[Auth] Linked search - Found:', !!linkedRestaurant, 'Error:', linkedError?.code);
+
         if (linkedRestaurant) {
             restaurant = linkedRestaurant;
-        } else if (!linkedError || linkedError.code === 'PGRST116') {
+        } else {
             // PGRST116 = no rows found (normal case)
             // Only allow auto-link if email is verified
             if (!supabaseUser.email_confirmed_at) {
@@ -49,10 +53,12 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
 
             const { data: emailMatchRestaurant, error: emailError } = await supabase
                 .from('restaurants')
-                .select('id')
+                .select('*')
                 .or(`email.eq.${userEmail},confirmation_email.eq.${userEmail}`)
                 .is('supabase_user_id', null)
                 .single();
+
+            console.log('[Auth] Email search - Found:', !!emailMatchRestaurant, 'Error:', emailError?.code);
 
             if (emailMatchRestaurant) {
                 // Auto-link: update this restaurant with the Supabase user_id
@@ -61,6 +67,8 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
                     .update({ supabase_user_id: supabaseUser.id })
                     .eq('id', emailMatchRestaurant.id);
 
+                console.log('[Auth] Auto-link - Error:', updateError?.code);
+
                 if (!updateError) {
                     restaurant = emailMatchRestaurant;
                 }
@@ -68,8 +76,11 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
         }
 
         if (!restaurant) {
+            console.log('[Auth] No restaurant found for user:', supabaseUser.id);
             return res.status(403).json({ error: 'Restaurant not linked to Supabase user' });
         }
+
+        console.log('[Auth] Restaurant linked:', restaurant.id);
 
         // Inject user info into request
         req.user = {
