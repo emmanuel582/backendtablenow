@@ -20,9 +20,8 @@ const SETTINGS_ALLOWLIST = new Set([
 
 router.get('/', async (req: AuthRequest, res: Response) => {
     try {
-        const { data: restaurant, error } = await supabase
-            .from('restaurants').select('*').eq('id', req.user!.restaurantId).single();
-        if (error || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
+        const restaurant = req.restaurant;
+        if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
         const { password, verification_token, google_calendar_tokens, ...settings } = restaurant;
         res.json({ settings });
     } catch (error: any) {
