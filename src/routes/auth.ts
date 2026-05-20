@@ -11,6 +11,7 @@ import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
 import { generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
+import { getUserContextWithNextRoute } from './me';
 
 const router = Router();
 
@@ -385,25 +386,8 @@ router.post('/google/supabase', async (req: Request, res: Response) => {
 });
 
 // ── Get current user ───────────────────────────────────────────────────────────────────
+// Deprecated: Use GET /api/me instead. This endpoint now delegates to the same handler for consistency.
 
-router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => {
-    try {
-        const restaurantId = req.user?.restaurantId;
-        if (!restaurantId) return res.status(403).json({ error: 'Restaurant not found' });
-
-        const { data: restaurant, error: findError } = await supabase
-            .from('restaurants')
-            .select('*')
-            .eq('id', restaurantId)
-            .single();
-        if (findError || !restaurant) return res.status(404).json({ error: 'Restaurant not found' });
-
-        const { password: _, google_calendar_tokens: __, ...restaurantData } = restaurant;
-        res.json(restaurantData);
-    } catch (error: any) {
-        logger.error({ error }, 'Get user error');
-        res.status(403).json({ error: 'Invalid token' });
-    }
-});
+router.get('/me', authenticateToken, getUserContextWithNextRoute);
 
 export default router;
