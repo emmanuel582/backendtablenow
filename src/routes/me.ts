@@ -105,7 +105,6 @@ export async function getUserContextWithNextRoute(req: AuthRequest, res: Respons
       provisioning: {
         status: ctx.provisioning?.status || 'not_started',
         phone_number: restaurant?.vapi_phone_number,
-        assistant_id: restaurant?.vapi_assistant_id,
       },
       onboarding: {
         status: ctx.onboarding?.status || 'not_started',
