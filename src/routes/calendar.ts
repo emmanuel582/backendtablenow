@@ -53,11 +53,35 @@ router.get('/callback', (req: any, res: Response) => {
     }
 
     // Verify CSRF state token
-    if (!state || !cookieState || state !== cookieState) {
-        console.error('OAuth state mismatch — possible CSRF', { state, cookieState });
+    if (!state) {
+        console.error('OAuth callback missing state parameter', {
+            hasCookie: !!cookieState,
+            hasCode: !!code
+        });
         res.clearCookie('oauth_state');
         res.clearCookie('oauth_return_to');
         return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state`);
+    }
+
+    if (!cookieState) {
+        console.error('OAuth state cookie not found', {
+            state: state ? state.slice(0, 16) + '...' : 'missing',
+            cookieKeys: Object.keys(req.cookies || {})
+        });
+        res.clearCookie('oauth_state');
+        res.clearCookie('oauth_return_to');
+        return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=no_cookie`);
+    }
+
+    if (state !== cookieState) {
+        console.error('OAuth state mismatch', {
+            stateMatch: false,
+            cookieStateLength: cookieState?.length,
+            stateLength: state?.length
+        });
+        res.clearCookie('oauth_state');
+        res.clearCookie('oauth_return_to');
+        return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=mismatch`);
     }
 
     // Clear both cookies
@@ -87,14 +111,23 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
             httpOnly: true,
             secure: true,
             sameSite: 'lax',
-            maxAge: 10 * 60 * 1000
+            maxAge: 10 * 60 * 1000,
+            path: '/'
         } as any;
 
         res.cookie('oauth_state', state, cookieOptions);
         res.cookie('oauth_return_to', safeReturnTo, cookieOptions);
 
         const authUrl = calendarService.getAuthUrl(state);
-        console.log('Generated Google Auth URL with state and returnTo', { state, returnTo: safeReturnTo, context });
+        console.log('Set OAuth cookies and generated auth URL', {
+            stateSet: true,
+            returnToSet: true,
+            state: state.slice(0, 16) + '...',
+            returnTo: safeReturnTo,
+            context,
+            secure: cookieOptions.secure,
+            sameSite: cookieOptions.sameSite
+        });
         res.json({ authUrl });
     } catch (error: any) {
         console.error('Get auth URL error:', error);
