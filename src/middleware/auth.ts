@@ -20,68 +20,40 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
 
     try {
-        // Verify Supabase JWT
-        const { data: { user: supabaseUser }, error: authError } = await supabase.auth.getUser(token);
+        // Verify backend JWT (not Supabase token)
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
 
-        if (authError || !supabaseUser) {
-            return res.status(403).json({ error: 'Invalid or expired token' });
+        if (!decoded.restaurantId) {
+            return res.status(403).json({ error: 'Invalid token: missing restaurantId' });
         }
 
-        let restaurant;
-
-        // 1. Try to find restaurant by existing supabase_user_id link
-        const { data: linkedRestaurant, error: linkedError } = await supabase
+        // Fetch restaurant by ID
+        const { data: restaurant, error: dbError } = await supabase
             .from('restaurants')
             .select('*')
-            .eq('supabase_user_id', supabaseUser.id)
+            .eq('id', decoded.restaurantId)
             .single();
 
-        if (linkedRestaurant) {
-            restaurant = linkedRestaurant;
-        } else {
-            // Only allow auto-link if email is verified
-            if (!supabaseUser.email_confirmed_at) {
-                return res.status(403).json({ error: 'Email must be verified to link restaurant' });
-            }
-
-            // Try to find unlinked restaurant by email match
-            const userEmail = supabaseUser.email || '';
-
-            const { data: emailMatchRestaurant, error: emailError } = await supabase
-                .from('restaurants')
-                .select('*')
-                .or(`email.eq.${userEmail},confirmation_email.eq.${userEmail}`)
-                .is('supabase_user_id', null)
-                .single();
-
-            if (emailMatchRestaurant) {
-                // Auto-link: update this restaurant with the Supabase user_id
-                const { error: updateError } = await supabase
-                    .from('restaurants')
-                    .update({ supabase_user_id: supabaseUser.id })
-                    .eq('id', emailMatchRestaurant.id);
-
-                if (!updateError) {
-                    restaurant = emailMatchRestaurant;
-                }
-            }
-        }
-
-        if (!restaurant) {
-            return res.status(403).json({ error: 'Restaurant not linked to Supabase user' });
+        if (dbError || !restaurant) {
+            return res.status(403).json({ error: 'Restaurant not found' });
         }
 
         // Inject user info into request
         req.user = {
-            userId: supabaseUser.id,
-            email: supabaseUser.email || '',
+            userId: decoded.id,
+            email: decoded.email,
             restaurantId: restaurant.id,
         };
         req.restaurant = restaurant;
 
         next();
-    } catch (error) {
-        console.error('Auth error:', error);
-        return res.status(403).json({ error: 'Invalid or expired token' });
+    } catch (error: any) {
+        if (error.name === 'JsonWebTokenError') {
+            return res.status(403).json({ error: 'Invalid token' });
+        }
+        if (error.name === 'TokenExpiredError') {
+            return res.status(403).json({ error: 'Token expired' });
+        }
+        return res.status(403).json({ error: 'Authentication failed' });
     }
 };
