@@ -20,40 +20,62 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
 
     try {
-        // Verify backend JWT (not Supabase token)
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+        // Verify Supabase access token
+        const { data: { user: supabaseUser }, error: authError } = await supabase.auth.getUser(token);
 
-        if (!decoded.restaurantId) {
-            return res.status(403).json({ error: 'Invalid token: missing restaurantId' });
+        if (authError || !supabaseUser) {
+            return res.status(401).json({ error: 'Invalid or expired token' });
         }
 
-        // Fetch restaurant by ID
-        const { data: restaurant, error: dbError } = await supabase
-            .from('restaurants')
+        const supabaseUserId = supabaseUser.id;
+        const userEmail = supabaseUser.email || '';
+
+        // Find TableNow user by supabase_user_id or email
+        let { data: tableNowUser, error: findError } = await supabase
+            .from('users')
             .select('*')
-            .eq('id', decoded.restaurantId)
+            .eq('supabase_user_id', supabaseUserId)
             .single();
 
-        if (dbError || !restaurant) {
-            return res.status(403).json({ error: 'Restaurant not found' });
+        // If not found by supabase_user_id, try by email
+        if (!tableNowUser && findError?.code === 'PGRST116' && userEmail) {
+            const { data: userByEmail } = await supabase
+                .from('users')
+                .select('*')
+                .eq('email', userEmail)
+                .single();
+            tableNowUser = userByEmail;
         }
 
-        // Inject user info into request
+        // Link supabase_user_id if user exists but not yet linked
+        if (tableNowUser && !tableNowUser.supabase_user_id) {
+            await supabase
+                .from('users')
+                .update({ supabase_user_id: supabaseUserId })
+                .eq('id', tableNowUser.id);
+            tableNowUser.supabase_user_id = supabaseUserId;
+        }
+
+        // Inject user info — does NOT require a restaurant
         req.user = {
-            userId: decoded.id,
-            email: decoded.email,
-            restaurantId: restaurant.id,
+            userId: supabaseUserId,
+            email: userEmail,
+            restaurantId: tableNowUser?.restaurant_id || '',
         };
-        req.restaurant = restaurant;
+
+        // Try to find and attach restaurant if user exists and has a restaurant_id
+        if (tableNowUser?.restaurant_id) {
+            const { data: restaurant } = await supabase
+                .from('restaurants')
+                .select('*')
+                .eq('id', tableNowUser.restaurant_id)
+                .single();
+            req.restaurant = restaurant || undefined;
+        }
 
         next();
     } catch (error: any) {
-        if (error.name === 'JsonWebTokenError') {
-            return res.status(403).json({ error: 'Invalid token' });
-        }
-        if (error.name === 'TokenExpiredError') {
-            return res.status(403).json({ error: 'Token expired' });
-        }
-        return res.status(403).json({ error: 'Authentication failed' });
+        console.error('Auth error:', error);
+        return res.status(401).json({ error: 'Authentication failed' });
     }
 };
