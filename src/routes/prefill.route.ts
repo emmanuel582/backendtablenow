@@ -3,9 +3,21 @@ import { prefillRestaurant, autocompleteRestaurant } from '../controllers/prefil
 
 const router = Router();
 
-// Legacy endpoints (used by old Register flow)
-router.post('/api/restaurants/prefill', prefillRestaurant);
-router.post('/api/restaurants/autocomplete', autocompleteRestaurant);
+// ────────────────────────────────────────────────────────────────────────────────
+// DEPRECATED LEGACY ENDPOINTS
+// Kept for backward compatibility, delegates to new /api/prefill/* routes
+// Clients should migrate to GET /api/prefill/autocomplete and GET /api/prefill/details
+// ────────────────────────────────────────────────────────────────────────────────
+
+router.post('/api/restaurants/prefill', (req: Request, res: Response, next) => {
+    console.warn('[DEPRECATED] POST /api/restaurants/prefill - use POST /api/restaurants/prefill for now (will be removed in v2)');
+    return prefillRestaurant(req, res);
+});
+
+router.post('/api/restaurants/autocomplete', (req: Request, res: Response, next) => {
+    console.warn('[DEPRECATED] POST /api/restaurants/autocomplete - use GET /api/prefill/autocomplete instead');
+    return autocompleteRestaurant(req, res);
+});
 
 /**
  * GET /api/prefill/autocomplete?input=TEXT&sessiontoken=UUID
