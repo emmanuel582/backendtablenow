@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
@@ -6,6 +7,55 @@ import vapiService from '../services/vapi.service';
 import calendarService from '../services/calendar.service';
 
 const router = Router();
+
+/**
+ * Verify VAPI webhook signature using HMAC-SHA256
+ * Prevents attackers from faking booking events
+ * SECURITY: KEEP PUBLIC CONTRACT - signature required
+ */
+function verifyVapiSignature(req: Request, secret: string): boolean {
+    const signature = req.headers['x-vapi-signature'] as string;
+
+    if (!signature) {
+        console.warn('⚠️ VAPI webhook missing signature header');
+        return false;
+    }
+
+    try {
+        // Reconstruct the signed payload (body + timestamp)
+        const timestamp = req.headers['x-vapi-timestamp'] as string;
+        const nonce = req.headers['x-vapi-nonce'] as string;
+
+        if (!timestamp || !nonce) {
+            console.warn('⚠️ VAPI webhook missing timestamp or nonce');
+            return false;
+        }
+
+        // Build the signed content: timestamp.nonce.body
+        const body = JSON.stringify(req.body);
+        const signedContent = `${timestamp}.${nonce}.${body}`;
+
+        // Calculate expected signature using timing-safe comparison
+        const expectedSignature = crypto
+            .createHmac('sha256', secret)
+            .update(signedContent)
+            .digest('hex');
+
+        // Use timingSafeEqual to prevent timing attacks
+        const signatureBuffer = Buffer.from(signature, 'hex');
+        const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+
+        if (signatureBuffer.length !== expectedBuffer.length) {
+            console.warn('⚠️ VAPI signature length mismatch');
+            return false;
+        }
+
+        return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
+    } catch (err: any) {
+        console.error('⚠️ VAPI signature verification error:', err.message);
+        return false;
+    }
+}
 
 /**
  * Resolve restaurant_id: accepts UUID or slug, returns UUID or null
@@ -26,11 +76,24 @@ async function resolveRestaurantId(idOrSlug: string): Promise<string | null> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VAPI webhook handler for call events
+// SECURITY: Verifies HMAC-SHA256 signature before processing
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/webhook', async (req: Request, res: Response) => {
     try {
+        // Verify VAPI webhook signature (SECURITY CRITICAL)
+        const secret = process.env.VAPI_WEBHOOK_SECRET;
+        if (!secret) {
+            console.error('❌ VAPI_WEBHOOK_SECRET not configured');
+            return res.status(500).json({ error: 'Server misconfiguration' });
+        }
+
+        if (!verifyVapiSignature(req, secret)) {
+            console.warn('🔐 VAPI webhook signature verification failed - rejecting request');
+            return res.status(401).json({ error: 'Unauthorized: Invalid signature' });
+        }
+
         const event = req.body.message || req.body;
-        console.log('VAPI Webhook received:', JSON.stringify(event, null, 2));
+        console.log('✅ VAPI Webhook verified and received:', JSON.stringify(event, null, 2));
 
         switch (event.type) {
             case 'call.started':
