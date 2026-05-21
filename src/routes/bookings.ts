@@ -10,7 +10,8 @@ import {
     getBookings,
     getBookingById,
     cancelBooking,
-    normalizeBooking
+    normalizeBooking,
+    createBooking
 } from '../services/booking.service';
 import { NotFoundError, DatabaseError } from '../lib/errors';
 import supabase from '../config/supabase';
@@ -39,7 +40,9 @@ router.get('/:id', async (req: AuthRequest, res: Response, next) => {
     } catch (err) { next(err); }
 });
 
-// ─── POST /bookings (manual creation from dashboard) ─────────────────────────
+// ─── POST /bookings (unified endpoint) ─────────────────────────────────────────
+// KEEP PUBLIC CONTRACT: Handles all booking creation (manual, VAPI, web, etc.)
+// Single endpoint for all sources
 
 router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, res: Response, next) => {
     try {
@@ -55,31 +58,25 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
 
         if (!restaurant) throw new NotFoundError('Restaurant');
 
-        // Manual booking : si la langue n'est pas fournie par le formulaire,
+        // Manual booking: si la langue n'est pas fournie par le formulaire,
         // on retombe sur celle du restaurant.
         const guestLanguage: 'fr' | 'en' = language === 'en' || language === 'fr'
             ? language
             : (restaurant.language === 'en' ? 'en' : 'fr');
 
-        const { data: booking, error } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id:  restaurantId,
-                booking_date:   date,
-                booking_time:   time,
-                party_size:     partySize,
-                guest_name:     guestName,
-                guest_email:    guestEmail,
-                guest_phone:    guestPhone || null,
-                special_requests: specialRequests || null,
-                status:         'confirmed',
-                source:         'manual',
-                guest_language: guestLanguage
-            })
-            .select()
-            .single();
-
-        if (error || !booking) throw new DatabaseError('Failed to create booking', error);
+        // Use unified createBooking function
+        const booking = await createBooking({
+            restaurant_id: restaurantId,
+            date,
+            time,
+            covers: partySize,
+            guest_name: guestName,
+            guest_email: guestEmail,
+            guest_phone: guestPhone,
+            special_requests: specialRequests,
+            source: 'manual',
+            guest_language: guestLanguage
+        });
 
         log.info({ bookingId: booking.id, language: guestLanguage }, 'Manual booking created');
 

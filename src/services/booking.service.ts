@@ -78,16 +78,33 @@ export async function getBookingById(id: string, restaurantId: string) {
     return normalizeBooking(data);
 }
 
-// ─── Create (VAPI path) ───────────────────────────────────────────────────────
+// ─── Create (unified endpoint) ────────────────────────────────────────────────
+// KEEP PUBLIC CONTRACT: POST /api/bookings handles all booking creation
+// Supports both manual (dashboard) and VAPI creation with unified logic
 
-export async function createVapiBooking(input: CreateBookingInput, correlationId?: string) {
+interface UnifiedCreateBookingInput {
+    restaurant_id: string;
+    date: string;
+    time: string;
+    covers: number;
+    guest_name: string;
+    guest_email?: string | null;
+    guest_phone?: string | null;
+    special_requests?: string | null;
+    source: 'manual' | 'phone' | 'web';
+    guest_language?: 'fr' | 'en';
+    idempotency_key?: string | null;
+}
+
+export async function createBooking(input: UnifiedCreateBookingInput, correlationId?: string) {
     const {
         restaurant_id, date, time, covers,
-        first_name, last_name, phone, email,
-        special_requests, idempotency_key
+        guest_name, guest_email, guest_phone,
+        special_requests, source, guest_language = 'fr',
+        idempotency_key
     } = input;
 
-    const log = logger.child({ correlationId, restaurant_id, date, time, covers });
+    const log = logger.child({ correlationId, restaurant_id, date, time, covers, source });
 
     // Idempotency check — prevent duplicate bookings on VAPI retry
     if (idempotency_key) {
@@ -104,17 +121,16 @@ export async function createVapiBooking(input: CreateBookingInput, correlationId
         }
     }
 
-    const guestName = `${first_name} ${last_name}`.trim();
     const bookedFor = `${date}T${time}:00`;
 
-    // Upsert customer
+    // Upsert customer (if phone provided)
     let customerId: string | null = null;
-    if (phone) {
+    if (guest_phone) {
         const { data: existing } = await supabase
             .from('customers')
             .select('id')
             .eq('restaurant_id', restaurant_id)
-            .eq('phone', phone)
+            .eq('phone', guest_phone)
             .maybeSingle();
 
         if (existing) {
@@ -122,7 +138,7 @@ export async function createVapiBooking(input: CreateBookingInput, correlationId
         } else {
             const { data: created } = await supabase
                 .from('customers')
-                .insert({ restaurant_id, phone, name: guestName, email: email || null })
+                .insert({ restaurant_id, phone: guest_phone, name: guest_name, email: guest_email || null })
                 .select('id')
                 .single();
             customerId = created?.id || null;
@@ -139,16 +155,17 @@ export async function createVapiBooking(input: CreateBookingInput, correlationId
             booking_date:  date,
             booking_time:  time,
             party_size:    covers,
-            guest_name:    guestName,
-            guest_email:   email || null,
-            guest_phone:   phone || null,
+            guest_name:    guest_name,
+            guest_email:   guest_email || null,
+            guest_phone:   guest_phone || null,
             // Legacy fields (kept for backward compat)
             booked_for:    bookedFor,
             covers,
             special_requests: special_requests || null,
-            source:        'vapi',
+            source,
             status:        'confirmed',
-            call_id:       idempotency_key || null
+            call_id:       idempotency_key || null,
+            guest_language: guest_language
         })
         .select()
         .single();
@@ -158,8 +175,38 @@ export async function createVapiBooking(input: CreateBookingInput, correlationId
         throw new DatabaseError('Failed to create booking', error);
     }
 
-    log.info({ bookingId: booking.id }, 'Booking created');
+    log.info({ bookingId: booking.id, source }, 'Booking created');
     return booking;
+}
+
+// ─── Create (VAPI path - legacy wrapper) ──────────────────────────────────────
+// Kept for backward compatibility, delegates to unified createBooking
+
+export async function createVapiBooking(input: CreateBookingInput, correlationId?: string) {
+    const {
+        restaurant_id, date, time, covers,
+        first_name, last_name, phone, email,
+        special_requests, idempotency_key
+    } = input;
+
+    const guestName = `${first_name} ${last_name}`.trim();
+
+    return createBooking(
+        {
+            restaurant_id,
+            date,
+            time,
+            covers,
+            guest_name: guestName,
+            guest_email: email,
+            guest_phone: phone,
+            special_requests,
+            source: 'phone',
+            guest_language: 'fr',
+            idempotency_key
+        },
+        correlationId
+    );
 }
 
 // ─── Cancel ───────────────────────────────────────────────────────────────────

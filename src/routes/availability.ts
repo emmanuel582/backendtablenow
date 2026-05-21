@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import supabase from '../config/supabase';
+import { createBooking } from '../services/booking.service';
+import logger from '../lib/logger';
 
 const router = Router();
 
@@ -163,8 +165,9 @@ router.get('/next', async (req: Request, res: Response) => {
 });
 
 // ──────────────────────────────────────────────
-// POST /api/availability/bookings  (alias /api/bookings)
-// Crée une réservation directe (web/dashboard/manual)
+// POST /api/availability/bookings (deprecated alias)
+// DEPRECATED: Use POST /api/bookings instead
+// Kept for backward compatibility, delegates to unified endpoint
 // Body: restaurant_id, phone, name?, email?,
 //       booked_for (ISO), covers, special_requests?, source?
 // ──────────────────────────────────────────────
@@ -177,23 +180,7 @@ router.post('/bookings', async (req: Request, res: Response) => {
     }
 
     try {
-        // Find or create customer
-        let { data: customer } = await supabase
-            .from('customers')
-            .select('id')
-            .eq('restaurant_id', restaurant_id)
-            .eq('phone', phone)
-            .single();
-
-        if (!customer) {
-            const { data: created, error: cErr } = await supabase
-                .from('customers')
-                .insert({ restaurant_id, phone, name: name || null, email: email || null })
-                .select('id')
-                .single();
-            if (cErr) throw cErr;
-            customer = created;
-        }
+        const log = logger.child({ restaurant_id, path: 'POST /availability/bookings (deprecated)' });
 
         // Validate slot availability
         const bookedDate = booked_for.slice(0, 10);
@@ -209,23 +196,20 @@ router.post('/bookings', async (req: Request, res: Response) => {
             return res.status(409).json({ error: 'Créneau complet', remaining: targetSlot.remaining });
         }
 
-        // Create booking
-        const { data: booking, error: bErr } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id,
-                customer_id: customer!.id,
-                booked_for,
-                covers: parseInt(covers, 10),
-                special_requests: special_requests || null,
-                source,
-                status: 'confirmed'
-            })
-            .select()
-            .single();
+        // Delegate to unified createBooking (via availability endpoint)
+        const booking = await createBooking({
+            restaurant_id,
+            date: bookedDate,
+            time: hhmm,
+            covers: parseInt(covers, 10),
+            guest_name: name || 'Guest',
+            guest_email: email,
+            guest_phone: phone,
+            special_requests: special_requests || null,
+            source: source as 'manual' | 'phone' | 'web'
+        });
 
-        if (bErr) throw bErr;
-
+        log.info({ bookingId: booking.id }, 'Booking created via deprecated endpoint');
         return res.json({ success: true, booking });
     } catch (err: any) {
         console.error('[POST /availability/bookings]', err);
