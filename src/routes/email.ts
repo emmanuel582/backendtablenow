@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authenticateToken, AuthRequest } from '../middleware/auth';
+import { authenticateToken, AuthRequest, validateBCCSecret } from '../middleware/auth';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 
@@ -7,8 +7,10 @@ const router = Router();
 
 /**
  * BCC email webhook (receives emails from Zenchef/SevenRooms)
+ * SECURITY: Requires X-BCC-Secret header matching BCC_SECRET env var
+ * Prevents attackers from faking PMS notifications
  */
-router.post('/bcc', async (req: Request, res: Response) => {
+router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
     try {
         // CloudMailin sends data in specific format
         const { envelope, plain, html, headers } = req.body;

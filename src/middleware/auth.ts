@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase';
 
@@ -55,5 +56,47 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             return res.status(403).json({ error: 'Token expired' });
         }
         return res.status(403).json({ error: 'Authentication failed' });
+    }
+};
+
+/**
+ * Middleware to validate BCC email endpoint secret header
+ * Prevents attackers from faking PMS notifications
+ * SECURITY: KEEP PUBLIC CONTRACT - X-BCC-Secret header required
+ */
+export const validateBCCSecret = (req: Request, res: Response, next: NextFunction) => {
+    const secret = process.env.BCC_SECRET;
+    const headerSecret = req.headers['x-bcc-secret'] as string;
+
+    if (!secret) {
+        console.error('❌ BCC_SECRET not configured');
+        return res.status(500).json({ error: 'Server misconfiguration' });
+    }
+
+    if (!headerSecret) {
+        console.warn('🔐 BCC endpoint request missing X-BCC-Secret header');
+        return res.status(401).json({ error: 'Unauthorized: Missing X-BCC-Secret header' });
+    }
+
+    try {
+        // Use timingSafeEqual to prevent timing attacks
+        const secretBuffer = Buffer.from(secret, 'utf8');
+        const headerBuffer = Buffer.from(headerSecret, 'utf8');
+
+        if (secretBuffer.length !== headerBuffer.length) {
+            console.warn('🔐 BCC secret length mismatch - rejecting request');
+            return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
+        }
+
+        if (!crypto.timingSafeEqual(secretBuffer, headerBuffer)) {
+            console.warn('🔐 BCC secret verification failed - rejecting request');
+            return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
+        }
+
+        // Secret valid, proceed
+        next();
+    } catch (err: any) {
+        console.error('⚠️ BCC secret validation error:', err.message);
+        return res.status(401).json({ error: 'Unauthorized' });
     }
 };
