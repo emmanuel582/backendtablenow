@@ -7,6 +7,7 @@ import { Request, Response } from 'express';
 import supabase from '../config/supabase';
 import calendarService from '../services/calendar.service';
 import emailService from '../services/email.service';
+import logger, { logActionStart } from '../lib/logger';
 
 // ============================================
 // Verrou par restaurant (in-memory, VPS unique)
@@ -24,7 +25,10 @@ async function withRestaurantLock<T>(restaurantId: string, fn: () => Promise<T>)
     restaurantLocks.set(restaurantId, current);
 
     const timeout = setTimeout(() => {
-        console.warn(`[lock] Timeout forcé pour restaurant ${restaurantId}`);
+        logger.warn(
+            { restaurantId, action: 'lock_timeout' },
+            'Restaurant lock forcibly released due to timeout'
+        );
         releaseLock();
     }, 30000); // 30s timeout reduces race condition risk on slow networks
 
@@ -252,7 +256,17 @@ export async function createReservation(req: Request, res: Response): Promise<vo
 
             if (insertError) throw insertError;
 
-            console.log(`✅ Booking: ${newBooking.id} — customer: ${customerId}`);
+            logger.info(
+                {
+                    action: 'booking_created',
+                    restaurant_id: newBooking.restaurant_id,
+                    booking_id: newBooking.id,
+                    customer_id: customerId,
+                    source: 'phone',
+                    covers: coversInt
+                },
+                'Booking successfully created'
+            );
             reservationInfo.booking_id = newBooking.id;
 
             // Étapes non-bloquantes après libération du verrou
@@ -263,7 +277,14 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                     await supabase.from('bookings').update({ google_calendar_event_id: calendarEventId }).eq('id', newBooking.id);
                 }
             } catch (calendarErr: any) {
-                console.error('[create-reservation] Calendar error (non-bloquant):', calendarErr.message);
+                logger.error(
+                    {
+                        action: 'calendar_sync_error',
+                        booking_id: newBooking.id,
+                        error: calendarErr.message
+                    },
+                    'Failed to sync booking to Google Calendar (non-blocking)'
+                );
             }
 
             let emailSent = false;
@@ -271,7 +292,15 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 emailSent = await sendConfirmationEmail(restaurant, reservationInfo);
                 await supabase.from('bookings').update({ confirmation_email_sent: emailSent }).eq('id', newBooking.id);
             } catch (emailErr: any) {
-                console.error('[create-reservation] Email error (non-bloquant):', emailErr.message);
+                logger.error(
+                    {
+                        action: 'confirmation_email_error',
+                        booking_id: newBooking.id,
+                        guest_email: reservationInfo.email,
+                        error: emailErr.message
+                    },
+                    'Failed to send confirmation email (non-blocking)'
+                );
             }
 
             let bccSent = false;
@@ -279,7 +308,15 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 bccSent = await sendBccToPMS(restaurant, reservationInfo);
                 await supabase.from('bookings').update({ bcc_email_sent: bccSent }).eq('id', newBooking.id);
             } catch (bccErr: any) {
-                console.error('[create-reservation] BCC error (non-bloquant):', bccErr.message);
+                logger.error(
+                    {
+                        action: 'bcc_email_error',
+                        booking_id: newBooking.id,
+                        pms_email: restaurant?.pms_email,
+                        error: bccErr.message
+                    },
+                    'Failed to send BCC email to PMS (non-blocking)'
+                );
             }
 
             const agentScript = guestLanguage === 'en'
@@ -296,7 +333,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
             });
 
         } catch (err: any) {
-            console.error('[create-reservation] Erreur critique:', err);
+            logger.error({ action: 'create_reservation', error: err.message, restaurant_id: restaurantId }, 'Critical error during reservation creation');
             const errorScript = guestLanguage === 'en'
                 ? `I'm sorry, I'm experiencing a technical issue. Your booking could not be saved. Please call the restaurant directly.`
                 : `Je suis désolé, je rencontre une difficulté technique. Votre réservation n'a pas pu être enregistrée. Je vous invite à rappeler directement le restaurant.`;

@@ -4,6 +4,7 @@
  * Convives NEVER sent to HubSpot.
  */
 import supabase from '../config/supabase';
+import logger from '../lib/logger';
 
 const HUBSPOT_TOKEN = process.env.HUBSPOT_API_KEY;
 const HUBSPOT_API = 'https://api.hubapi.com';
@@ -52,7 +53,7 @@ async function findCompany(name: string): Promise<string | null> {
  */
 export async function syncRestaurantToHubSpot(restaurantId: string): Promise<string | null> {
     if (!HUBSPOT_TOKEN) {
-        console.warn('[hubspot-sync] HUBSPOT_API_KEY not set — skipping');
+        logger.warn({ action: 'hubspot_sync' }, 'HUBSPOT_API_KEY not set — skipping');
         return null;
     }
 
@@ -63,7 +64,7 @@ export async function syncRestaurantToHubSpot(restaurantId: string): Promise<str
         .single();
 
     if (error || !restaurant) {
-        console.error('[hubspot-sync] Restaurant not found:', restaurantId);
+        logger.error({ action: 'hubspot_sync', restaurant_id: restaurantId }, 'Restaurant not found');
         return null;
     }
 
@@ -80,18 +81,18 @@ export async function syncRestaurantToHubSpot(restaurantId: string): Promise<str
         if (companyId) {
             // Update existing company
             await hubspotRequest('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties });
-            console.log(`[hubspot-sync] Updated company ${companyId} for ${restaurant.name}`);
+            logger.info({ action: 'hubspot_sync', company_id: companyId, restaurant_name: restaurant.name }, 'Updated company');
         } else {
             // Try to find by name first (avoid duplicates)
             companyId = await findCompany(restaurant.name);
 
             if (companyId) {
                 await hubspotRequest('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties });
-                console.log(`[hubspot-sync] Found & updated company ${companyId} for ${restaurant.name}`);
+                logger.info({ action: 'hubspot_sync', company_id: companyId, restaurant_name: restaurant.name }, 'Found & updated company');
             } else {
                 const created: any = await hubspotRequest('POST', '/crm/v3/objects/companies', { properties });
                 companyId = created.id;
-                console.log(`[hubspot-sync] Created company ${companyId} for ${restaurant.name}`);
+                logger.info({ action: 'hubspot_sync', company_id: companyId, restaurant_name: restaurant.name }, 'Created company');
             }
 
             // Store back in Supabase
@@ -103,7 +104,7 @@ export async function syncRestaurantToHubSpot(restaurantId: string): Promise<str
 
         return companyId;
     } catch (err: any) {
-        console.error('[hubspot-sync] Error:', err.message);
+        logger.error({ action: 'hubspot_sync', error: err.message }, 'HubSpot sync error');
         return null;
     }
 }

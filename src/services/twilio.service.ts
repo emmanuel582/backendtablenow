@@ -1,4 +1,5 @@
 import axios from 'axios';
+import logger from '../lib/logger';
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
@@ -11,7 +12,7 @@ class TwilioService {
 
     constructor() {
         if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-            console.warn('Twilio credentials not configured');
+            logger.warn({ action: 'twilio_init' }, 'Twilio credentials not configured');
         }
         // Use Basic Auth with Account SID and Auth Token
         this.auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
@@ -41,7 +42,7 @@ class TwilioService {
 
             return response.data.available_phone_numbers || [];
         } catch (error: any) {
-            console.error('Error searching Twilio numbers:', error.response?.data || error.message);
+            logger.error({ action: 'twilio_search', error: error.message }, 'Error searching Twilio numbers');
             throw error;
         }
     }
@@ -68,7 +69,7 @@ class TwilioService {
 
             return response.data;
         } catch (error: any) {
-            console.error('Error purchasing Twilio number:', error.response?.data || error.message);
+            logger.error({ action: 'twilio_purchase', error: error.message }, 'Error purchasing Twilio number');
             throw error;
         }
     }
@@ -91,7 +92,7 @@ class TwilioService {
 
             return phoneNumber;
         } catch (error: any) {
-            console.error('Error buying phone number:', error);
+            logger.error({ action: 'twilio_buy', error: error.message }, 'Error buying phone number');
             throw error;
         }
     }
@@ -120,7 +121,7 @@ class TwilioService {
 
             return response.data;
         } catch (error: any) {
-            console.error('Error importing to VAPI:', error.response?.data || error.message);
+            logger.error({ action: 'twilio_vapi_import', error: error.message }, 'Error importing to VAPI');
             throw error;
         }
     }
@@ -139,7 +140,7 @@ class TwilioService {
                 vapiPhone
             };
         } catch (error: any) {
-            console.error('Error in buy and import flow:', error);
+            logger.error({ action: 'twilio_buy_import', error: error.message }, 'Error in buy and import flow');
             throw error;
         }
     }
@@ -172,7 +173,7 @@ class TwilioService {
 
             return response.data;
         } catch (error: any) {
-            console.error('Error sending SMS via Twilio:', error.response?.data || error.message);
+            logger.error({ action: 'twilio_sms', error: error.message }, 'Error sending SMS via Twilio');
             throw error;
         }
     }

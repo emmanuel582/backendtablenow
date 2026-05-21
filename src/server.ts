@@ -108,9 +108,9 @@ app.listen(PORT, () => {
 });
 
 // ── Trial email cron (runs in-process, every hour) ────────────────────────────────────────────────
-checkTrialEmails().catch(err => console.error('Trial email cron startup error:', err));
+checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron startup error'));
 setInterval(() => {
-    checkTrialEmails().catch(err => console.error('Trial email cron error:', err));
+    checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron error'));
 }, 60 * 60 * 1000);
 
 export default app;
