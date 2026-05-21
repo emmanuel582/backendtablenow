@@ -26,7 +26,7 @@ async function withRestaurantLock<T>(restaurantId: string, fn: () => Promise<T>)
     const timeout = setTimeout(() => {
         console.warn(`[lock] Timeout forcé pour restaurant ${restaurantId}`);
         releaseLock();
-    }, 8000);
+    }, 30000); // 30s timeout reduces race condition risk on slow networks
 
     try {
         await previous;
