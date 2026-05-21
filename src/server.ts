@@ -95,9 +95,6 @@ app.use('/api/stripe',       stripeRoutes);
 app.use('/api/referral', referralRoutes);
 app.use(prefillRouter);
 
-// Backward compat: VAPI tools also reachable at /vapi/* (no rate limit)
-app.use('/vapi', vapiRoutes);
-
 // ── 404 ─────────────────────────────────────────────────────────────────────────────────────────
 app.use((req: Request, res: Response) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: `Route ${req.method} ${req.path} not found` } });
