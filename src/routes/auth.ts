@@ -12,6 +12,8 @@ import provisioningService from '../services/provisioning.service';
 import { generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { getUserContextWithNextRoute } from './me';
+import { validate } from '../middleware/handlers';
+import { AuthGoogleSchema } from '../schemas/authGoogleSchema';
 
 const router = Router();
 
@@ -281,9 +283,9 @@ router.get('/google/callback', (_req: Request, res: Response) => {
 
 // ── Supabase Google OAuth token exchange ───────────────────────────────────────────
 
-router.post('/google/supabase', async (req: Request, res: Response) => {
+router.post('/google/supabase', validate(AuthGoogleSchema), async (req: Request, res: Response) => {
     const { access_token } = req.body;
-    if (!access_token) return res.status(400).json({ error: 'Missing access_token' });
+    const correlationId = (req as any).correlationId;
     try {
         const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
             headers: {

@@ -3,8 +3,10 @@ import crypto from 'crypto';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
-
+import logger from '../lib/logger';
 import calendarService from '../services/calendar.service';
+import { validate } from '../middleware/handlers';
+import { VapiWebhookPayloadSchema } from '../schemas/vapiWebhookSchema';
 
 const router = Router();
 
@@ -17,7 +19,7 @@ function verifyVapiSignature(req: Request, secret: string): boolean {
     const signature = req.headers['x-vapi-signature'] as string;
 
     if (!signature) {
-        console.warn('⚠️ VAPI webhook missing signature header');
+        logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI webhook missing signature header');
         return false;
     }
 
@@ -27,7 +29,7 @@ function verifyVapiSignature(req: Request, secret: string): boolean {
         const nonce = req.headers['x-vapi-nonce'] as string;
 
         if (!timestamp || !nonce) {
-            console.warn('⚠️ VAPI webhook missing timestamp or nonce');
+            logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI webhook missing timestamp or nonce');
             return false;
         }
 
@@ -46,13 +48,13 @@ function verifyVapiSignature(req: Request, secret: string): boolean {
         const expectedBuffer = Buffer.from(expectedSignature, 'hex');
 
         if (signatureBuffer.length !== expectedBuffer.length) {
-            console.warn('⚠️ VAPI signature length mismatch');
+            logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI signature length mismatch');
             return false;
         }
 
         return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
     } catch (err: any) {
-        console.error('⚠️ VAPI signature verification error:', err.message);
+        logger.error({ action: 'vapi_webhook_verify', error: err.message }, 'VAPI signature verification error');
         return false;
     }
 }
@@ -78,22 +80,22 @@ async function resolveRestaurantId(idOrSlug: string): Promise<string | null> {
 // VAPI webhook handler for call events
 // SECURITY: Verifies HMAC-SHA256 signature before processing
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/webhook', async (req: Request, res: Response) => {
+router.post('/webhook', validate(VapiWebhookPayloadSchema), async (req: Request, res: Response) => {
     try {
         // Verify VAPI webhook signature (SECURITY CRITICAL)
         const secret = process.env.VAPI_WEBHOOK_SECRET;
         if (!secret) {
-            console.error('❌ VAPI_WEBHOOK_SECRET not configured');
+            logger.error({ action: 'vapi_webhook' }, 'VAPI_WEBHOOK_SECRET not configured');
             return res.status(500).json({ error: 'Server misconfiguration' });
         }
 
         if (!verifyVapiSignature(req, secret)) {
-            console.warn('🔐 VAPI webhook signature verification failed - rejecting request');
+            logger.warn({ action: 'vapi_webhook' }, 'VAPI webhook signature verification failed - rejecting request');
             return res.status(401).json({ error: 'Unauthorized: Invalid signature' });
         }
 
         const event = req.body.message || req.body;
-        console.log('✅ VAPI Webhook verified and received:', JSON.stringify(event, null, 2));
+        logger.info({ action: 'vapi_webhook_received', event_type: event.type }, 'VAPI webhook verified and received');
 
         switch (event.type) {
             case 'call.started':
@@ -109,16 +111,16 @@ router.post('/webhook', async (req: Request, res: Response) => {
             case 'assistant-request':
                 return await handleAssistantRequest(event, res);
             case 'end-of-call-report':
-                console.log('Processing end-of-call-report event:', JSON.stringify(event, null, 2));
+                logger.info({ action: 'vapi_webhook_end_of_call', event_type: event.type }, 'Processing end-of-call-report event');
                 await handleCallEnded(event);
                 break;
             default:
-                console.log('Unhandled event type:', event.type);
+                logger.warn({ action: 'vapi_webhook_unhandled', event_type: event.type }, 'Unhandled event type');
         }
 
         res.json({ received: true });
     } catch (error: any) {
-        console.error('VAPI webhook error:', error);
+        logger.error({ action: 'vapi_webhook', error: error.message }, 'VAPI webhook error');
         res.status(500).json({ error: 'Webhook processing failed' });
     }
 });
@@ -131,7 +133,7 @@ router.post('/assistant-config', async (req: Request, res: Response) => {
     try {
         const phoneNumber = req.body?.message?.call?.to;
 
-        console.log('📞 assistant-config request for phone:', phoneNumber);
+        logger.info({ action: 'assistant_config', phone_number: phoneNumber }, 'Assistant config request');
 
         if (!phoneNumber) {
             return res.status(400).json({ error: 'No phone number in request' });
@@ -144,7 +146,7 @@ router.post('/assistant-config', async (req: Request, res: Response) => {
             .single();
 
         if (!restaurant) {
-            console.error('❌ Restaurant not found for phone:', phoneNumber);
+            logger.error({ action: 'assistant_config', phone_number: phoneNumber }, 'Restaurant not found for phone');
             return res.status(404).json({ error: 'Restaurant not found' });
         }
 

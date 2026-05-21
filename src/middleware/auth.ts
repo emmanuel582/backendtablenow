@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase';
+import logger from '../lib/logger';
 
 export interface AuthRequest extends Request {
     user?: {
@@ -69,12 +70,12 @@ export const validateBCCSecret = (req: Request, res: Response, next: NextFunctio
     const headerSecret = req.headers['x-bcc-secret'] as string;
 
     if (!secret) {
-        console.error('❌ BCC_SECRET not configured');
+        logger.error({ action: 'bcc_validation' }, 'BCC_SECRET not configured');
         return res.status(500).json({ error: 'Server misconfiguration' });
     }
 
     if (!headerSecret) {
-        console.warn('🔐 BCC endpoint request missing X-BCC-Secret header');
+        logger.warn({ action: 'bcc_validation' }, 'BCC endpoint request missing X-BCC-Secret header');
         return res.status(401).json({ error: 'Unauthorized: Missing X-BCC-Secret header' });
     }
 
@@ -84,19 +85,19 @@ export const validateBCCSecret = (req: Request, res: Response, next: NextFunctio
         const headerBuffer = Buffer.from(headerSecret, 'utf8');
 
         if (secretBuffer.length !== headerBuffer.length) {
-            console.warn('🔐 BCC secret length mismatch - rejecting request');
+            logger.warn({ action: 'bcc_validation' }, 'BCC secret length mismatch - rejecting request');
             return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
         }
 
         if (!crypto.timingSafeEqual(secretBuffer, headerBuffer)) {
-            console.warn('🔐 BCC secret verification failed - rejecting request');
+            logger.warn({ action: 'bcc_validation' }, 'BCC secret verification failed - rejecting request');
             return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
         }
 
         // Secret valid, proceed
         next();
     } catch (err: any) {
-        console.error('⚠️ BCC secret validation error:', err.message);
+        logger.error({ action: 'bcc_validation', error: err.message }, 'BCC secret validation error');
         return res.status(401).json({ error: 'Unauthorized' });
     }
 };

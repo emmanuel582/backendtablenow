@@ -4,6 +4,9 @@ import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import calendarService from '../services/calendar.service';
 import { config } from '../lib/config';
+import logger from '../lib/logger';
+import { validate } from '../middleware/handlers';
+import { ValidatedCalendarCallback } from '../schemas/calendarCallbackSchema';
 
 const router = Router();
 
@@ -54,31 +57,21 @@ router.get('/callback', (req: any, res: Response) => {
 
     // Verify CSRF state token
     if (!state) {
-        console.error('OAuth callback missing state parameter', {
-            hasCookie: !!cookieState,
-            hasCode: !!code
-        });
+        logger.error({ action: 'calendar_callback', has_cookie: !!cookieState, has_code: !!code }, 'OAuth callback missing state parameter');
         res.clearCookie('oauth_state');
         res.clearCookie('oauth_return_to');
         return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state`);
     }
 
     if (!cookieState) {
-        console.error('OAuth state cookie not found', {
-            state: state ? state.slice(0, 16) + '...' : 'missing',
-            cookieKeys: Object.keys(req.cookies || {})
-        });
+        logger.error({ action: 'calendar_callback', state_length: state?.length }, 'OAuth state cookie not found');
         res.clearCookie('oauth_state');
         res.clearCookie('oauth_return_to');
         return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=no_cookie`);
     }
 
     if (state !== cookieState) {
-        console.error('OAuth state mismatch', {
-            stateMatch: false,
-            cookieStateLength: cookieState?.length,
-            stateLength: state?.length
-        });
+        logger.error({ action: 'calendar_callback', state_match: false }, 'OAuth state mismatch');
         res.clearCookie('oauth_state');
         res.clearCookie('oauth_return_to');
         return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=mismatch`);
@@ -139,7 +132,7 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
  * OAuth callback - exchange code for tokens (authenticated)
  * This is where tokens are actually exchanged and stored
  */
-router.post('/callback', async (req: AuthRequest, res: Response) => {
+router.post('/callback', authenticateToken, validate(ValidatedCalendarCallback), async (req: AuthRequest, res: Response) => {
     try {
         const { code } = req.body;
         const restaurantId = req.user!.restaurantId;
@@ -163,9 +156,11 @@ router.post('/callback', async (req: AuthRequest, res: Response) => {
             .eq('id', restaurantId);
 
         if (updateError) {
-            console.error('Calendar callback update error:', updateError);
+            logger.error({ action: 'calendar_callback', error: updateError.message, restaurant_id: restaurantId }, 'Calendar callback update error');
             return res.status(500).json({ error: 'Failed to update calendar status' });
         }
+
+        logger.info({ action: 'calendar_callback', restaurant_id: restaurantId }, 'Calendar connected successfully');
 
         // Return safe response WITHOUT tokens
         res.json({
@@ -174,7 +169,7 @@ router.post('/callback', async (req: AuthRequest, res: Response) => {
             calendar_provider: 'google'
         });
     } catch (error: any) {
-        console.error('Calendar callback error:', error);
+        logger.error({ action: 'calendar_callback', error: error.message }, 'Calendar callback error');
         res.status(500).json({ error: 'Failed to connect calendar' });
     }
 });
