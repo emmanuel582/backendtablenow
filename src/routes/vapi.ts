@@ -7,6 +7,8 @@ import logger from '../lib/logger';
 import calendarService from '../services/calendar.service';
 import { validate } from '../middleware/handlers';
 import { VapiWebhookPayloadSchema } from '../schemas/vapiWebhookSchema';
+import vapiController from '../controllers/vapi.controller';
+import phoneResolutionService from '../services/phoneResolution.service';
 
 const router = Router();
 
@@ -130,77 +132,7 @@ router.post('/webhook', validate(VapiWebhookPayloadSchema), async (req: Request,
 // VAPI calls this on each incoming call to fill {{variable}} placeholders
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/assistant-config', async (req: Request, res: Response) => {
-    try {
-        const phoneNumber = req.body?.message?.call?.to;
-
-        logger.info({ action: 'assistant_config', phone_number: phoneNumber }, 'Assistant config request');
-
-        if (!phoneNumber) {
-            return res.status(400).json({ error: 'No phone number in request' });
-        }
-
-        const { data: restaurant } = await supabase
-            .from('restaurants')
-            .select('id, name, address, phone, opening_hours')
-            .eq('vapi_phone_number', phoneNumber)
-            .single();
-
-        if (!restaurant) {
-            logger.error({ action: 'assistant_config', phone_number: phoneNumber }, 'Restaurant not found for phone');
-            return res.status(404).json({ error: 'Restaurant not found' });
-        }
-
-        const openingHoursFormatted = vapiService.formatOpeningHours(restaurant.opening_hours);
-
-        // Live date injection (Paris timezone)
-        const now = new Date();
-        const tz = 'Europe/Paris';
-        const fmtFull = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-        const currentDate = fmtFull.format(now);
-        const todayParts = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
-            .formatToParts(now).reduce((a: any, p) => { a[p.type] = p.value; return a; }, {} as any);
-        const currentDateISO = todayParts['year'] + '-' + todayParts['month'] + '-' + todayParts['day'];
-        const isoFmt = new Intl.DateTimeFormat('fr-FR', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-        const dayFmtEN = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long' });
-        const isoOf = (d: Date) => {
-            const p = isoFmt.formatToParts(d).reduce((a: any, x) => { a[x.type] = x.value; return a; }, {} as any);
-            return p['year'] + '-' + p['month'] + '-' + p['day'];
-        };
-        const seen: Record<string, number> = {};
-        const parts = [
-            'tomorrow=' + isoOf(new Date(now.getTime() + 86400000)),
-            'day_after_tomorrow=' + isoOf(new Date(now.getTime() + 172800000))
-        ];
-        for (let i = 1; i <= 14; i++) {
-            const d = new Date(now.getTime() + i * 86400000);
-            const dayEN = dayFmtEN.format(d).toLowerCase();
-            const iso = isoOf(d);
-            seen[dayEN] = (seen[dayEN] || 0) + 1;
-            const key = seen[dayEN] === 1 ? dayEN : 'next_' + dayEN;
-            parts.push(key + '=' + iso);
-        }
-        const nextDays = parts.join(', ');
-
-        console.log('assistant-config: ' + restaurant.name + ' today=' + currentDateISO);
-
-        res.json({
-            assistant: {
-                variableValues: {
-                    restaurantName: restaurant.name,
-                    address: restaurant.address || '',
-                    humanPhone: restaurant.phone || '',
-                    openingHours: openingHoursFormatted,
-                    restaurantId: restaurant.id,
-                    currentDate,
-                    currentDateISO,
-                    nextDays
-                }
-            }
-        });
-    } catch (error: any) {
-        console.error('❌ assistant-config error:', error);
-        res.status(500).json({ error: 'Failed to build assistant config' });
-    }
+    return vapiController.handleAssistantConfig(req, res);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
