@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { simpleParser } from 'mailparser';
+import logger from '../lib/logger';
 
 // ── Fail fast if SMTP env is missing — never fall back to hardcoded credentials
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -32,9 +33,9 @@ export class EmailService {
 
         this.transporter.verify((error) => {
             if (error) {
-                console.error('❌ SMTP connection error:', error);
+                logger.error({ action: 'smtp_init', error: error.message }, 'SMTP connection error');
             } else {
-                console.log('✅ SMTP transporter initialized');
+                logger.info({ action: 'smtp_init' }, 'SMTP transporter initialized');
             }
         });
     }
@@ -92,19 +93,19 @@ export class EmailService {
 </body></html>`,
             });
 
-            console.log(JSON.stringify({
+            logger.info({
                 recipient: to,
                 template: 'verification',
                 trigger: 'register',
                 messageId: info.messageId,
-            }));
+            }, 'Verification email sent');
         } catch (error) {
-            console.error(JSON.stringify({
+            logger.error({
                 recipient: to,
                 template: 'verification',
                 trigger: 'register',
                 error: error instanceof Error ? error.message : String(error),
-            }));
+            }, 'Verification email failed');
             throw error;
         }
     }
@@ -173,19 +174,19 @@ export class EmailService {
 </body></html>`,
             });
 
-            console.log(JSON.stringify({
+            logger.info({
                 recipient: data.to,
                 template: 'booking_confirmation',
                 trigger: 'booking_created',
                 messageId: info.messageId,
-            }));
+            }, 'Booking confirmation email sent');
         } catch (error) {
-            console.error(JSON.stringify({
+            logger.error({
                 recipient: data.to,
                 template: 'booking_confirmation',
                 trigger: 'booking_created',
                 error: error instanceof Error ? error.message : String(error),
-            }));
+            }, 'Booking confirmation email failed');
             throw error;
         }
     }
@@ -253,19 +254,19 @@ export class EmailService {
       `,
             });
 
-            console.log(JSON.stringify({
+            logger.info({
                 recipient: data.to,
                 template: 'notification',
                 trigger,
                 messageId: info.messageId,
-            }));
+            }, 'Notification email sent');
         } catch (error) {
-            console.error(JSON.stringify({
+            logger.error({
                 recipient: data.to,
                 template: 'notification',
                 trigger,
                 error: error instanceof Error ? error.message : String(error),
-            }));
+            }, 'Notification email failed');
             throw error;
         }
     }
@@ -337,19 +338,19 @@ export class EmailService {
                 text: options.text,
             });
 
-            console.log(JSON.stringify({
+            logger.info({
                 recipient,
                 template: 'raw',
                 trigger,
                 messageId: info.messageId,
-            }));
+            }, 'Raw email sent');
         } catch (error) {
-            console.error(JSON.stringify({
+            logger.error({
                 recipient,
                 template: 'raw',
                 trigger,
                 error: error instanceof Error ? error.message : String(error),
-            }));
+            }, 'Raw email failed');
             throw error;
         }
     }

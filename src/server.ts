@@ -95,9 +95,6 @@ app.use('/api/stripe',       stripeRoutes);
 app.use('/api/referral', referralRoutes);
 app.use(prefillRouter);
 
-// Backward compat: VAPI tools also reachable at /vapi/* (no rate limit)
-app.use('/vapi', vapiRoutes);
-
 // ── 404 ─────────────────────────────────────────────────────────────────────────────────────────
 app.use((req: Request, res: Response) => {
     res.status(404).json({ error: { code: 'NOT_FOUND', message: `Route ${req.method} ${req.path} not found` } });
@@ -111,9 +108,9 @@ app.listen(PORT, () => {
 });
 
 // ── Trial email cron (runs in-process, every hour) ────────────────────────────────────────────────
-checkTrialEmails().catch(err => console.error('Trial email cron startup error:', err));
+checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron startup error'));
 setInterval(() => {
-    checkTrialEmails().catch(err => console.error('Trial email cron error:', err));
+    checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron error'));
 }, 60 * 60 * 1000);
 
 export default app;
