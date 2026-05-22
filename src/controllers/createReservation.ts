@@ -333,7 +333,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
             });
 
         } catch (err: any) {
-            logger.error({ action: 'create_reservation', error: err.message, restaurant_id: restaurantId }, 'Critical error during reservation creation');
+            logger.error({ action: 'create_reservation', error: err.message, restaurant_id }, 'Critical error during reservation creation');
             const errorScript = guestLanguage === 'en'
                 ? `I'm sorry, I'm experiencing a technical issue. Your booking could not be saved. Please call the restaurant directly.`
                 : `Je suis désolé, je rencontre une difficulté technique. Votre réservation n'a pas pu être enregistrée. Je vous invite à rappeler directement le restaurant.`;
