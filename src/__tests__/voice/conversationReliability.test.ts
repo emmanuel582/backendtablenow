@@ -306,3 +306,98 @@ describe('ConversationReliabilityService — booking summary', () => {
     expect(summary).not.toContain('1 personnes');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRITICAL TESTS — Phase 6 Anti-Hallucination Gates
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ConversationReliabilityService — CRITICAL: premature confirmation', () => {
+  it('rejects confirmation received before pending status (early affirmation)', () => {
+    const session = baseSession({
+      slots: {
+        first_name: confirmed('Karim'),
+        last_name: confirmed('Dubois'),
+        phone: confirmed('+33612345678'),
+        guest_count: confirmed(4),
+        date: confirmed('2026-05-24'),
+        time: confirmed('20:00'),
+      },
+      confirmation_status: 'not_required', // NOT 'pending'
+    });
+
+    const guard = conversationReliability.canPerformBackendAction(session);
+    expect(guard.allowed).toBe(false);
+    expect(guard.reason).toContain('confirmation');
+  });
+});
+
+describe('ConversationReliabilityService — CRITICAL: accent normalization', () => {
+  it('normalizes accents in confirmation parsing ("c\'est ça" normalizes to match "c est ca")', () => {
+    const result1 = conversationReliability.parseConfirmation("c'est ça", 'fr');
+    const result2 = conversationReliability.parseConfirmation('c est ca', 'fr');
+    expect(result1).toBe('confirmed');
+    expect(result2).toBe('confirmed');
+    expect(result1).toBe(result2);
+  });
+});
+
+describe('ConversationReliabilityService — CRITICAL: time inferred blocking', () => {
+  it('blocks booking when time is inferred (e.g., "soir")', () => {
+    const session = baseSession({
+      slots: {
+        first_name: confirmed('Karim'),
+        last_name: confirmed('Dubois'),
+        phone: confirmed('+33612345678'),
+        guest_count: confirmed(4),
+        date: confirmed('2026-05-24'),
+        time: inferred('19:00'), // Time inferred from "soir"
+      },
+      confirmation_status: 'confirmed',
+    });
+
+    const guard = conversationReliability.canPerformBackendAction(session);
+    expect(guard.allowed).toBe(false);
+    expect(guard.reason).toBe('field_not_confirmed:time');
+  });
+});
+
+describe('ConversationReliabilityService — CRITICAL: backend failure messaging', () => {
+  it('never returns "réservation confirmée" when backend action status is failed', () => {
+    const session = baseSession({
+      slots: {
+        first_name: confirmed('Karim'),
+        last_name: confirmed('Dubois'),
+        phone: confirmed('+33612345678'),
+        guest_count: confirmed(4),
+        date: confirmed('2026-05-24'),
+        time: confirmed('20:00'),
+      },
+      confirmation_status: 'confirmed',
+      backend_action_status: 'failed',
+    });
+
+    const decision = conversationReliability.decideNextAction(session);
+    expect(decision.action.type).not.toBe('proceed_to_booking');
+  });
+});
+
+describe('ConversationReliabilityService — CRITICAL: no forced booking on unavailability', () => {
+  it('rejects when availability check returns no slots (never force booking)', () => {
+    const session = baseSession({
+      slots: {
+        first_name: confirmed('Karim'),
+        last_name: confirmed('Dubois'),
+        phone: confirmed('+33612345678'),
+        guest_count: confirmed(4),
+        date: confirmed('2026-05-24'),
+        time: confirmed('20:00'),
+      },
+      confirmation_status: 'confirmed',
+      backend_action_status: 'availability_check_failed',
+    });
+
+    const decision = conversationReliability.decideNextAction(session);
+    expect(decision.action.type).not.toBe('proceed_to_booking');
+    expect(decision.action.type).toBe('ask_clarification');
+  });
+});

@@ -9,6 +9,7 @@ import { validate } from '../middleware/handlers';
 import { VapiWebhookPayloadSchema } from '../schemas/vapiWebhookSchema';
 import vapiController from '../controllers/vapi.controller';
 import phoneResolutionService from '../services/phoneResolution.service';
+import { createBooking } from '../services/booking.service';
 
 const router = Router();
 
@@ -335,67 +336,31 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
         // Normalize time
         const normalizedTime = normalizeTime(time) || time;
-        const bookedFor = `${date}T${normalizedTime}:00`;
 
-        const { data: booking, error: insertError } = await supabase
-            .from('bookings')
-            .insert({
-                restaurant_id: resolvedId,
-                customer_id: customerId,
-                booked_for: bookedFor,
-                covers,
-                source: 'phone',
-                status: 'confirmed',
-                call_id: null,
-                guest_language: language
-            })
-            .select()
-            .single();
+        try {
+            const booking = await createBooking(
+                {
+                    restaurant_id: resolvedId,
+                    date,
+                    time: normalizedTime,
+                    covers,
+                    guest_name: guestName,
+                    guest_email: guestEmail || null,
+                    guest_phone: guestPhone || null,
+                    source: 'phone',
+                    guest_language: language
+                },
+                'vapi-create-booking',
+                {
+                    id: resolvedId,
+                    name: restaurant.name,
+                    address: restaurant.address || '',
+                    phone: restaurant.phone || '',
+                    google_calendar_tokens: restaurant.google_calendar_tokens
+                }
+            );
 
-        if (insertError || !booking) {
-            console.error('[create-booking] Insert error:', insertError);
-            const payload = { success: false, message: 'Erreur lors de la création de la réservation.' };
-            return toolCall
-                ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-                : res.status(500).json(payload);
-        }
-
-        console.log(`✅ Booking created: ${booking.id}`);
-
-        // Non-blocking: Google Calendar
-        if (restaurant.google_calendar_tokens) {
-            setImmediate(async () => {
-                try {
-                    const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                    const startTime = new Date(`${date}T${normalizedTime}:00`);
-                    const endTime = new Date(startTime.getTime() + 90 * 60000);
-                    const gCalEvent = await calendarService.createEvent(tokens, {
-                        summary: `[TableNow] ${guestName} — ${covers} pers.`,
-                        description: `📞 ${guestPhone}\n${guestEmail ? '📧 ' + guestEmail : ''}`,
-                        start: startTime, end: endTime,
-                        attendees: guestEmail ? [guestEmail] : []
-                    });
-                    if (gCalEvent?.id) await supabase.from('bookings').update({ google_calendar_event_id: gCalEvent.id }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create-booking] Calendar:', err.message); }
-            });
-        }
-
-        // Non-blocking: Confirmation email (in caller's language)
-        if (guestEmail) {
-            setImmediate(async () => {
-                try {
-                    await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name,
-                        restaurantAddress: restaurant.address || '',
-                        restaurantPhone: restaurant.phone || '',
-                        guestName,
-                        date, time: normalizedTime, partySize: covers, confirmationNumber: booking.id,
-                        language
-                    });
-                    await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create-booking] Email:', err.message); }
-            });
-        }
+            console.log(`✅ Booking created: ${booking.id}`);
 
         const successMessage = language === 'en'
             ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
@@ -750,7 +715,7 @@ async function executeFunctionCall(functionName: string, restaurant: any, parame
         case 'check_availability':
             return await checkAvailability(restaurant.id, restaurant, normalizedParams);
         case 'create_booking':
-            return await createBooking(restaurant.id, restaurant, normalizedParams, callerPhone);
+            return await createBookingTool(restaurant.id, restaurant, normalizedParams, callerPhone);
         case 'update_booking':
             return await updateBooking(restaurant.id, restaurant, normalizedParams);
         case 'cancel_booking':
@@ -825,7 +790,7 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
     }
 }
 
-async function createBooking(restaurantId: string, restaurant: any, params: any, callerPhone?: string) {
+async function createBookingTool(restaurantId: string, restaurant: any, params: any, callerPhone?: string) {
     const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests } = params;
     const covers = parseInt(partySize, 10);
     const normalizedTime = normalizeTime(time);
@@ -833,87 +798,31 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
 
     try {
         const phoneKey = callerPhone || guestPhone;
-        let customerId: string | null = null;
-        if (phoneKey) {
-            const { data: existing } = await supabase
-                .from('customers')
-                .select('id')
-                .eq('restaurant_id', restaurantId)
-                .eq('phone', phoneKey)
-                .single();
-            if (existing) {
-                customerId = existing.id;
-            } else {
-                const { data: created } = await supabase
-                    .from('customers')
-                    .insert({ restaurant_id: restaurantId, phone: phoneKey, name: guestName || null, email: guestEmail || null })
-                    .select('id')
-                    .single();
-                customerId = created?.id || null;
-            }
-        }
 
-        const bookedFor = `${date}T${normalizedTime}:00`;
-        const { data: booking, error: insertError } = await supabase
-            .from('bookings')
-            .insert({
+        const booking = await createBooking(
+            {
                 restaurant_id: restaurantId,
-                customer_id: customerId,
-                booked_for: bookedFor,
+                date,
+                time: normalizedTime,
                 covers,
+                guest_name: guestName || 'Guest',
+                guest_email: guestEmail || null,
+                guest_phone: phoneKey || null,
                 special_requests: specialRequests || null,
-                source: 'vapi',
-                status: 'confirmed',
-                call_id: null,
+                source: 'phone',
                 guest_language: language
-            })
-            .select()
-            .single();
+            },
+            'vapi-tool-call',
+            {
+                id: restaurantId,
+                name: restaurant.name,
+                address: restaurant.address || '',
+                phone: restaurant.phone || '',
+                google_calendar_tokens: restaurant.google_calendar_tokens
+            }
+        );
 
-        if (insertError || !booking) {
-            console.error('[create_booking] Insert error:', insertError);
-            return {
-                success: false,
-                message: language === 'en' ? 'Could not create the booking.' : 'Impossible de créer la réservation.'
-            };
-        }
-
-        console.log(`✅ Booking created: ${booking.id} — customer: ${customerId}`);
-
-        // Non-blocking: Google Calendar
-        if (restaurant.google_calendar_tokens) {
-            setImmediate(async () => {
-                try {
-                    const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                    const startTime = new Date(`${date}T${normalizedTime}:00`);
-                    const endTime = new Date(startTime.getTime() + 90 * 60000);
-                    const gCalEvent = await calendarService.createEvent(tokens, {
-                        summary: `[TableNow] ${guestName} — ${covers} pers.`,
-                        description: `📞 ${guestPhone}\n${guestEmail ? '📧 ' + guestEmail : ''}`,
-                        start: startTime, end: endTime,
-                        attendees: guestEmail ? [guestEmail] : []
-                    });
-                    if (gCalEvent?.id) await supabase.from('bookings').update({ google_calendar_event_id: gCalEvent.id }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create_booking] Calendar:', err.message); }
-            });
-        }
-
-        // Non-blocking: Email (in caller's language)
-        if (guestEmail) {
-            setImmediate(async () => {
-                try {
-                    await emailService.sendBookingConfirmation({
-                        to: guestEmail, restaurantName: restaurant.name,
-                        restaurantAddress: restaurant.address || '',
-                        restaurantPhone: restaurant.phone || '',
-                        guestName,
-                        date, time: normalizedTime || time, partySize: covers, confirmationNumber: booking.id,
-                        language
-                    });
-                    await supabase.from('bookings').update({ confirmation_email_sent: true }).eq('id', booking.id);
-                } catch (err: any) { console.error('[create_booking] Email:', err.message); }
-            });
-        }
+        console.log(`✅ Booking created: ${booking.id}`);
 
         const successMessage = language === 'en'
             ? `Booking confirmed for ${covers} ${covers > 1 ? 'guests' : 'guest'} on ${date} at ${normalizedTime || time} under the name ${guestName}.`
@@ -925,7 +834,7 @@ async function createBooking(restaurantId: string, restaurant: any, params: any,
             message: successMessage
         };
     } catch (err: any) {
-        console.error('[create_booking] Critical error:', err);
+        console.error('[createBookingTool] Critical error:', err);
         return {
             success: false,
             message: language === 'en' ? 'Technical error.' : 'Erreur technique.'
