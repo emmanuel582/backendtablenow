@@ -333,7 +333,21 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             : res.status(404).json(payload);
     }
 
-    console.log(`📝 create-booking: ${resolvedId} — ${guestName} ${date} ${time} x${covers}`);
+    // Booking trace — redact PII (no name, no full phone) for GDPR-safe logs.
+    // We keep correlation IDs (restaurant + call + date/time/covers) for debugging.
+    const phoneRedacted = guestPhone
+        ? `${guestPhone.slice(0, 3)}******${guestPhone.slice(-2)}`
+        : 'none';
+    console.log('📝 create-booking', {
+        restaurant_id: resolvedId,
+        call_id: message?.call?.id || null,
+        date,
+        time,
+        covers,
+        customer_present: true,
+        phone_redacted: phoneRedacted,
+        email_present: !!guestEmail,
+    });
 
     const { data: restaurant } = await supabase
         .from('restaurants')
