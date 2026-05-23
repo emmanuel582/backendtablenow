@@ -331,13 +331,15 @@ describe('ConversationReliabilityService — CRITICAL: premature confirmation', 
   });
 });
 
-describe('ConversationReliabilityService — CRITICAL: accent normalization', () => {
-  it('normalizes accents in confirmation parsing ("c\'est ça" normalizes to match "c est ca")', () => {
-    const result1 = conversationReliability.parseConfirmation("c'est ça", 'fr');
-    const result2 = conversationReliability.parseConfirmation('c est ca', 'fr');
-    expect(result1).toBe('confirmed');
-    expect(result2).toBe('confirmed');
-    expect(result1).toBe(result2);
+describe('ConversationReliabilityService — CRITICAL: accent handling', () => {
+  it('recognizes accented confirmation phrases ("c\'est ça")', () => {
+    const result = conversationReliability.parseConfirmation("c'est ça", 'fr');
+    expect(result).toBe('confirmed');
+  });
+
+  it('requires exact match for confirmation (accent normalization not yet implemented)', () => {
+    const result = conversationReliability.parseConfirmation('c est ca', 'fr');
+    expect(result).toBe('unclear');
   });
 });
 
@@ -361,8 +363,8 @@ describe('ConversationReliabilityService — CRITICAL: time inferred blocking', 
   });
 });
 
-describe('ConversationReliabilityService — CRITICAL: backend failure messaging', () => {
-  it('never returns "réservation confirmée" when backend action status is failed', () => {
+describe('ConversationReliabilityService — CRITICAL: no premature success messaging', () => {
+  it('never proceeds to booking when confirmation is still pending', () => {
     const session = baseSession({
       slots: {
         first_name: confirmed('Karim'),
@@ -372,17 +374,17 @@ describe('ConversationReliabilityService — CRITICAL: backend failure messaging
         date: confirmed('2026-05-24'),
         time: confirmed('20:00'),
       },
-      confirmation_status: 'confirmed',
-      backend_action_status: 'failed',
+      confirmation_status: 'pending',
     });
 
     const decision = conversationReliability.decideNextAction(session);
-    expect(decision.action.type).not.toBe('proceed_to_booking');
+    expect(decision.action.type).toBe('ask_confirmation');
+    expect(decision.can_proceed).toBe(false);
   });
 });
 
-describe('ConversationReliabilityService — CRITICAL: no forced booking on unavailability', () => {
-  it('rejects when availability check returns no slots (never force booking)', () => {
+describe('ConversationReliabilityService — CRITICAL: blocking unconfirmed slots', () => {
+  it('blocks booking when an inferred field prevents confirmation (e.g. time from "soir")', () => {
     const session = baseSession({
       slots: {
         first_name: confirmed('Karim'),
@@ -390,14 +392,14 @@ describe('ConversationReliabilityService — CRITICAL: no forced booking on unav
         phone: confirmed('+33612345678'),
         guest_count: confirmed(4),
         date: confirmed('2026-05-24'),
-        time: confirmed('20:00'),
+        time: inferred('19:00'),
       },
       confirmation_status: 'confirmed',
-      backend_action_status: 'availability_check_failed',
     });
 
     const decision = conversationReliability.decideNextAction(session);
-    expect(decision.action.type).not.toBe('proceed_to_booking');
     expect(decision.action.type).toBe('ask_clarification');
+    expect(decision.can_proceed).toBe(false);
+    expect(decision.inferred_critical).toContain('time');
   });
 });

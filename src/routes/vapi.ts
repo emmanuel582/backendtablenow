@@ -250,89 +250,88 @@ router.post('/check-availability', async (req: Request, res: Response) => {
 // Accepts both direct flat body AND VAPI tool-call wrapper format
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/create-booking', async (req: Request, res: Response) => {
-    try {
-        // Extract params: flat body OR VAPI tool-call wrapper
-        const { message } = req.body;
-        const toolCall = message?.toolCallList?.[0] || message?.toolCalls?.[0];
-        const callerPhone = message?.call?.customer?.number;
-        let restaurantId: string, date: string, time: string, covers: number;
-        let firstName: string, lastName: string, guestPhone: string, guestEmail: string;
-        let language: 'fr' | 'en';
+    // Extract params: flat body OR VAPI tool-call wrapper
+    const { message } = req.body;
+    const toolCall = message?.toolCallList?.[0] || message?.toolCalls?.[0];
+    const callerPhone = message?.call?.customer?.number;
+    let restaurantId: string, date: string, time: string, covers: number;
+    let firstName: string, lastName: string, guestPhone: string, guestEmail: string;
+    let language: 'fr' | 'en';
 
-        if (toolCall) {
-            const rawArgs = toolCall.function?.arguments || toolCall.parameters || '{}';
-            const params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
-            restaurantId = params.restaurant_id;
-            date = params.date;
-            time = params.time;
-            covers = parseInt(params.covers || params.partySize, 10);
-            firstName = params.first_name || '';
-            lastName = params.last_name || '';
-            guestPhone = params.phone || params.guestPhone || callerPhone || '';
-            guestEmail = params.email || params.guestEmail || '';
-            language = params.language === 'en' ? 'en' : 'fr';
-        } else {
-            restaurantId = req.body.restaurant_id;
-            date = req.body.date;
-            time = req.body.time;
-            covers = parseInt(req.body.covers, 10);
-            firstName = req.body.first_name || '';
-            lastName = req.body.last_name || '';
-            guestPhone = req.body.phone || '';
-            guestEmail = req.body.email || '';
-            language = req.body.language === 'en' ? 'en' : 'fr';
-        }
+    if (toolCall) {
+        const rawArgs = toolCall.function?.arguments || toolCall.parameters || '{}';
+        const params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        restaurantId = params.restaurant_id;
+        date = params.date;
+        time = params.time;
+        covers = parseInt(params.covers || params.partySize, 10);
+        firstName = params.first_name || '';
+        lastName = params.last_name || '';
+        guestPhone = params.phone || params.guestPhone || callerPhone || '';
+        guestEmail = params.email || params.guestEmail || '';
+        language = params.language === 'en' ? 'en' : 'fr';
+    } else {
+        restaurantId = req.body.restaurant_id;
+        date = req.body.date;
+        time = req.body.time;
+        covers = parseInt(req.body.covers, 10);
+        firstName = req.body.first_name || '';
+        lastName = req.body.last_name || '';
+        guestPhone = req.body.phone || '';
+        guestEmail = req.body.email || '';
+        language = req.body.language === 'en' ? 'en' : 'fr';
+    }
 
-        if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
+    if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
 
-        const guestName = `${firstName} ${lastName}`.trim();
+    const guestName = `${firstName} ${lastName}`.trim();
 
-        // Resolve slug to UUID if needed
-        const resolvedId = await resolveRestaurantId(restaurantId);
-        if (!resolvedId) {
-            const payload = { success: false, message: 'Restaurant non trouvé.' };
-            return toolCall
-                ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-                : res.status(404).json(payload);
-        }
+    // Resolve slug to UUID if needed
+    const resolvedId = await resolveRestaurantId(restaurantId);
+    if (!resolvedId) {
+        const payload = { success: false, message: 'Restaurant non trouvé.' };
+        return toolCall
+            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
+            : res.status(404).json(payload);
+    }
 
-        console.log(`📝 create-booking: ${resolvedId} — ${guestName} ${date} ${time} x${covers}`);
+    console.log(`📝 create-booking: ${resolvedId} — ${guestName} ${date} ${time} x${covers}`);
 
-        const { data: restaurant } = await supabase
-            .from('restaurants')
-            .select('*')
-            .eq('id', resolvedId)
+    const { data: restaurant } = await supabase
+        .from('restaurants')
+        .select('*')
+        .eq('id', resolvedId)
+        .single();
+
+    if (!restaurant) {
+        const payload = { success: false, message: 'Restaurant non trouvé.' };
+        return toolCall
+            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
+            : res.status(404).json(payload);
+    }
+
+    // Find or create customer
+    let customerId: string | null = null;
+    if (guestPhone) {
+        const { data: existing } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('restaurant_id', resolvedId)
+            .eq('phone', guestPhone)
             .single();
-
-        if (!restaurant) {
-            const payload = { success: false, message: 'Restaurant non trouvé.' };
-            return toolCall
-                ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-                : res.status(404).json(payload);
-        }
-
-        // Find or create customer
-        let customerId: string | null = null;
-        if (guestPhone) {
-            const { data: existing } = await supabase
+        if (existing) {
+            customerId = existing.id;
+        } else {
+            const { data: created } = await supabase
                 .from('customers')
+                .insert({ restaurant_id: resolvedId, phone: guestPhone, name: guestName, email: guestEmail || null })
                 .select('id')
-                .eq('restaurant_id', resolvedId)
-                .eq('phone', guestPhone)
                 .single();
-            if (existing) {
-                customerId = existing.id;
-            } else {
-                const { data: created } = await supabase
-                    .from('customers')
-                    .insert({ restaurant_id: resolvedId, phone: guestPhone, name: guestName, email: guestEmail || null })
-                    .select('id')
-                    .single();
-                customerId = created?.id || null;
-            }
+            customerId = created?.id || null;
         }
+    }
 
         // Normalize time
         const normalizedTime = normalizeTime(time) || time;
@@ -362,22 +361,22 @@ router.post('/create-booking', async (req: Request, res: Response) => {
 
             console.log(`✅ Booking created: ${booking.id}`);
 
-        const successMessage = language === 'en'
-            ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
-            : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
+            const successMessage = language === 'en'
+                ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
+                : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
 
-        const payload = {
-            success: true,
-            booking_id: booking.id,
-            message: successMessage
-        };
-        return toolCall
-            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-            : res.json(payload);
-    } catch (error: any) {
-        console.error('❌ create-booking error:', error);
-        res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
-    }
+            const payload = {
+                success: true,
+                booking_id: booking.id,
+                message: successMessage
+            };
+            return toolCall
+                ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
+                : res.json(payload);
+        } catch (error: any) {
+            console.error('❌ create-booking error:', error);
+            res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
+        }
 });
 
 
@@ -793,10 +792,14 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
 async function createBookingTool(restaurantId: string, restaurant: any, params: any, callerPhone?: string) {
     const { guestName, guestEmail, guestPhone, date, time, partySize, specialRequests } = params;
     const covers = parseInt(partySize, 10);
-    const normalizedTime = normalizeTime(time);
+    const normalizedTime = normalizeTime(time) || time;
     const language: 'fr' | 'en' = params.language === 'en' ? 'en' : 'fr';
 
     try {
+        if (!date || !normalizedTime) {
+            throw new Error('Missing required booking parameters: date or time');
+        }
+
         const phoneKey = callerPhone || guestPhone;
 
         const booking = await createBooking(

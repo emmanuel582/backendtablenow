@@ -200,6 +200,13 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 .eq('id', restaurant_id)
                 .single();
 
+            if (!restaurant) {
+                return res.status(404).json({
+                    success: false,
+                    reason: 'restaurant_not_found'
+                });
+            }
+
             // ── Find or create customer — keyed by (restaurant_id, phone) ──
             let customerId: string | null = null;
             {

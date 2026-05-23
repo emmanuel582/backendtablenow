@@ -76,7 +76,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
         };
 
         // If it's a new booking, create it in our system
-        if (parsedData.type === 'new' && parsedData.email) {
+        if (parsedData.type === 'new' && parsedData.email && parsedData.date && parsedData.time) {
             const booking = await createBooking(
                 {
                     restaurant_id: restaurantId,
