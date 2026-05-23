@@ -510,4 +510,10 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
 
 router.get('/me', authenticateToken, getUserContextWithNextRoute);
 
+// ── GET /auth/app-state ─────────────────────────────────────────────────────────
+// Phase 6C: Unified app state for frontend routing and guards
+// Returns complete authentication + permission context in one call
+
+router.get('/app-state', authenticateToken, getUserContextWithNextRoute);
+
 export default router;
