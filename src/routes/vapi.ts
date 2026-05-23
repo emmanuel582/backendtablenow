@@ -11,6 +11,7 @@ import vapiController from '../controllers/vapi.controller';
 import phoneResolutionService from '../services/phoneResolution.service';
 import { createBooking } from '../services/booking.service';
 import bookingOrchestrationService from '../services/voice/bookingOrchestration.service';
+import { validateBookingPayload } from '../services/voice/vapiBookingPayload.validator';
 import type { VoiceSessionState, ResolvedVoiceRestaurant } from '../types/voice.types';
 
 const router = Router();
@@ -284,9 +285,42 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         language = req.body.language === 'en' ? 'en' : 'fr';
     }
 
-    if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
-        return res.status(400).json({ error: 'Missing required fields' });
+    // Defensive validation BEFORE we ever synthesize a VoiceSessionState with
+    // status='confirmed'. We MUST NOT trust that VAPI only fires this hook
+    // post-collection — a malformed or premature call must be rejected here,
+    // not promoted to a confirmed slot and slipped past the orchestration gates.
+    const validation = validateBookingPayload({
+        restaurantId,
+        date,
+        time,
+        covers,
+        firstName,
+        lastName,
+        guestPhone,
+        guestEmail,
+    });
+
+    if (!validation.valid) {
+        console.warn('⚠️ create-booking rejected — incomplete/invalid payload', {
+            missing: validation.missing,
+            invalid: validation.invalid,
+            callId: message?.call?.id,
+        });
+        const payload = {
+            success: false,
+            status: 'needs_clarification' as const,
+            message: validation.message,
+            missing: validation.missing,
+            invalid: validation.invalid,
+        };
+        return toolCall
+            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
+            : res.status(400).json(payload);
     }
+
+    // Use normalized values from the validator (trimmed, parsed) from here on.
+    ({ restaurantId, date, time, covers, firstName, lastName, guestPhone } = validation.data);
+    guestEmail = validation.data.guestEmail || '';
 
     const guestName = `${firstName} ${lastName}`.trim();
 
