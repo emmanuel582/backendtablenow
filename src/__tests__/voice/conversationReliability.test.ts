@@ -331,15 +331,23 @@ describe('ConversationReliabilityService — CRITICAL: premature confirmation', 
   });
 });
 
-describe('ConversationReliabilityService — CRITICAL: accent handling', () => {
+describe('ConversationReliabilityService — CRITICAL: accent normalization', () => {
   it('recognizes accented confirmation phrases ("c\'est ça")', () => {
     const result = conversationReliability.parseConfirmation("c'est ça", 'fr');
     expect(result).toBe('confirmed');
   });
 
-  it('requires exact match for confirmation (accent normalization not yet implemented)', () => {
-    const result = conversationReliability.parseConfirmation('c est ca', 'fr');
-    expect(result).toBe('unclear');
+  it('normalizes accents and apostrophes so "c est ca" matches "c\'est ça"', () => {
+    const accented = conversationReliability.parseConfirmation("c'est ça", 'fr');
+    const stripped = conversationReliability.parseConfirmation('c est ca', 'fr');
+    expect(accented).toBe('confirmed');
+    expect(stripped).toBe('confirmed');
+    expect(stripped).toBe(accented);
+  });
+
+  it('handles uppercase + diacritics ("OUI" and "Parfait" recognized)', () => {
+    expect(conversationReliability.parseConfirmation('OUI', 'fr')).toBe('confirmed');
+    expect(conversationReliability.parseConfirmation('Parfait', 'fr')).toBe('confirmed');
   });
 });
 

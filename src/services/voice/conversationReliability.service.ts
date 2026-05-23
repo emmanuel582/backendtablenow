@@ -362,20 +362,37 @@ class ConversationReliabilityService {
 
   // ── Confirmation parsing (extremely strict) ────────────────────────────────
 
+  // Normalize for matching: lowercase, strip diacritics, collapse apostrophes/punctuation/whitespace.
+  // Lets "c'est ça" and "c est ca" match the same canonical form.
+  private normalizeForMatch(input: string): string {
+    return input
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '') // remove combining diacritics
+      .toLowerCase()
+      .replace(/['’`]/g, ' ') // apostrophes (' ' `) → space
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')     // other punctuation → space
+      .replace(/\s+/g, ' ')                  // collapse spaces
+      .trim();
+  }
+
   parseConfirmation(
     transcript: string,
     language: 'fr' | 'en'
   ): 'confirmed' | 'rejected' | 'unclear' {
     if (!transcript) return 'unclear';
-    const t = transcript.trim().toLowerCase();
+    const t = this.normalizeForMatch(transcript);
 
     const positiveFr = ['oui', "c'est ça", "c'est bien ça", 'exact', 'parfait'];
     const negativeFr = ['non', 'pas du tout', 'incorrect', 'attendez'];
     const positiveEn = ['yes', 'correct', 'thats right', "that's right", 'exactly'];
     const negativeEn = ['no', 'not correct', 'wrong', 'wait'];
 
-    const positives = language === 'en' ? positiveEn : positiveFr;
-    const negatives = language === 'en' ? negativeEn : negativeFr;
+    const positives = (language === 'en' ? positiveEn : positiveFr).map((p) =>
+      this.normalizeForMatch(p)
+    );
+    const negatives = (language === 'en' ? negativeEn : negativeFr).map((n) =>
+      this.normalizeForMatch(n)
+    );
 
     const hitPositive = positives.some((p) => t === p || t.startsWith(`${p} `) || t.endsWith(` ${p}`));
     const hitNegative = negatives.some((n) => t === n || t.startsWith(`${n} `) || t.endsWith(` ${n}`));
