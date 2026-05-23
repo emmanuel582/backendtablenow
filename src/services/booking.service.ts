@@ -1,6 +1,8 @@
 import supabase from '../config/supabase';
 import logger from '../lib/logger';
 import { DatabaseError, NotFoundError, ConflictError } from '../lib/errors';
+import emailService from './email.service';
+import calendarService from './calendar.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
@@ -78,9 +80,37 @@ export async function getBookingById(id: string, restaurantId: string) {
     return normalizeBooking(data);
 }
 
+// ─── Customer Upsert (shared) ─────────────────────────────────────────────────
+
+async function upsertCustomer(restaurantId: string, name: string, phone: string, email?: string | null): Promise<string | null> {
+    if (!phone) return null;
+
+    try {
+        const { data: existing } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('restaurant_id', restaurantId)
+            .eq('phone', phone)
+            .maybeSingle();
+
+        if (existing) return existing.id;
+
+        const { data: created } = await supabase
+            .from('customers')
+            .insert({ restaurant_id: restaurantId, phone, name, email: email || null })
+            .select('id')
+            .single();
+
+        return created?.id ?? null;
+    } catch (err) {
+        logger.error({ restaurantId, phone, error: err instanceof Error ? err.message : 'unknown' }, 'Customer upsert error');
+        return null;
+    }
+}
+
 // ─── Create (unified endpoint) ────────────────────────────────────────────────
 // KEEP PUBLIC CONTRACT: POST /api/bookings handles all booking creation
-// Supports both manual (dashboard) and VAPI creation with unified logic
+// Supports both manual (dashboard), voice (phone), and web creation with unified logic
 
 interface UnifiedCreateBookingInput {
     restaurant_id: string;
@@ -96,7 +126,19 @@ interface UnifiedCreateBookingInput {
     idempotency_key?: string | null;
 }
 
-export async function createBooking(input: UnifiedCreateBookingInput, correlationId?: string) {
+interface RestaurantEmailData {
+    id: string;
+    name: string;
+    address?: string;
+    phone?: string;
+    google_calendar_tokens?: string | null;
+}
+
+export async function createBooking(
+    input: UnifiedCreateBookingInput,
+    correlationId?: string,
+    restaurant?: RestaurantEmailData
+) {
     const {
         restaurant_id, date, time, covers,
         guest_name, guest_email, guest_phone,
@@ -123,27 +165,8 @@ export async function createBooking(input: UnifiedCreateBookingInput, correlatio
 
     const bookedFor = `${date}T${time}:00`;
 
-    // Upsert customer (if phone provided)
-    let customerId: string | null = null;
-    if (guest_phone) {
-        const { data: existing } = await supabase
-            .from('customers')
-            .select('id')
-            .eq('restaurant_id', restaurant_id)
-            .eq('phone', guest_phone)
-            .maybeSingle();
-
-        if (existing) {
-            customerId = existing.id;
-        } else {
-            const { data: created } = await supabase
-                .from('customers')
-                .insert({ restaurant_id, phone: guest_phone, name: guest_name, email: guest_email || null })
-                .select('id')
-                .single();
-            customerId = created?.id || null;
-        }
-    }
+    // Upsert customer (if phone provided) — shared logic
+    const customerId = await upsertCustomer(restaurant_id, guest_name, guest_phone!, guest_email);
 
     // Insert booking — write ALL canonical fields at creation time
     const { data: booking, error } = await supabase
@@ -176,7 +199,66 @@ export async function createBooking(input: UnifiedCreateBookingInput, correlatio
     }
 
     log.info({ bookingId: booking.id, source }, 'Booking created');
+
+    // Trigger email and calendar side effects (non-blocking)
+    if (restaurant) {
+        triggerBookingSideEffects(restaurant, booking, guest_name, guest_email, guest_phone, covers, date, time, guest_language, log);
+    }
+
     return booking;
+}
+
+// ─── Side Effects (email, calendar) ────────────────────────────────────────────
+
+function triggerBookingSideEffects(
+    restaurant: RestaurantEmailData,
+    booking: any,
+    guestName: string,
+    guestEmail: string | null | undefined,
+    guestPhone: string | null | undefined,
+    partySize: number,
+    date: string,
+    time: string,
+    language: string,
+    log: any
+) {
+    setImmediate(async () => {
+        if (guestEmail) {
+            try {
+                await emailService.sendBookingConfirmation({
+                    to: guestEmail,
+                    restaurantName: restaurant.name,
+                    restaurantAddress: restaurant.address || '',
+                    restaurantPhone: restaurant.phone || '',
+                    guestName,
+                    date,
+                    time,
+                    partySize,
+                    confirmationNumber: booking.id,
+                    language: language as 'fr' | 'en'
+                });
+            } catch (e) {
+                log.warn({ err: e }, 'Confirmation email failed');
+            }
+        }
+
+        if (restaurant.google_calendar_tokens) {
+            try {
+                const tokens = JSON.parse(restaurant.google_calendar_tokens);
+                const start = new Date(`${date}T${time}`);
+                const end = new Date(start.getTime() + 2 * 3600000);
+                await calendarService.createEvent(tokens, {
+                    summary: `${guestName} (${partySize} pers.)`,
+                    description: `Tel: ${guestPhone} | Email: ${guestEmail}`,
+                    start,
+                    end,
+                    attendees: guestEmail ? [guestEmail] : []
+                });
+            } catch (e) {
+                log.warn({ err: e }, 'Calendar event failed');
+            }
+        }
+    });
 }
 
 // ─── Create (VAPI path - legacy wrapper) ──────────────────────────────────────

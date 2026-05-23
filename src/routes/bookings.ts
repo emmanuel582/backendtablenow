@@ -15,8 +15,6 @@ import {
 } from '../services/booking.service';
 import { NotFoundError, DatabaseError } from '../lib/errors';
 import supabase from '../config/supabase';
-import emailService from '../services/email.service';
-import calendarService from '../services/calendar.service';
 import logger from '../lib/logger';
 
 const router = Router();
@@ -58,54 +56,28 @@ router.post('/', validate(ManualCreateBookingSchema), async (req: AuthRequest, r
 
         if (!restaurant) throw new NotFoundError('Restaurant');
 
-        // Manual booking: si la langue n'est pas fournie par le formulaire,
-        // on retombe sur celle du restaurant.
         const guestLanguage: 'fr' | 'en' = language === 'en' || language === 'fr'
             ? language
             : (restaurant.language === 'en' ? 'en' : 'fr');
 
-        // Use unified createBooking function
-        const booking = await createBooking({
-            restaurant_id: restaurantId,
-            date,
-            time,
-            covers: partySize,
-            guest_name: guestName,
-            guest_email: guestEmail,
-            guest_phone: guestPhone,
-            special_requests: specialRequests,
-            source: 'manual',
-            guest_language: guestLanguage
-        });
+        const booking = await createBooking(
+            {
+                restaurant_id: restaurantId,
+                date,
+                time,
+                covers: partySize,
+                guest_name: guestName,
+                guest_email: guestEmail,
+                guest_phone: guestPhone,
+                special_requests: specialRequests,
+                source: 'manual',
+                guest_language: guestLanguage
+            },
+            undefined,
+            restaurant
+        );
 
         log.info({ bookingId: booking.id, language: guestLanguage }, 'Manual booking created');
-
-        // Non-blocking side effects
-        setImmediate(async () => {
-            try {
-                await emailService.sendBookingConfirmation({
-                    to: guestEmail, restaurantName: restaurant.name,
-                    restaurantAddress: restaurant.address || '',
-                    restaurantPhone: restaurant.phone || '',
-                    guestName, date, time, partySize, confirmationNumber: booking.id,
-                    language: guestLanguage
-                });
-            } catch (e) { log.warn({ err: e }, 'Confirmation email failed'); }
-
-            if (restaurant.google_calendar_tokens) {
-                try {
-                    const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                    const start = new Date(`${date}T${time}`);
-                    const end = new Date(start.getTime() + 2 * 3600000);
-                    await calendarService.createEvent(tokens, {
-                        summary: `${guestName} (${partySize} pers.)`,
-                        description: `Tel: ${guestPhone} | Email: ${guestEmail}`,
-                        start, end, attendees: [guestEmail]
-                    });
-                } catch (e) { log.warn({ err: e }, 'Calendar event failed'); }
-            }
-        });
-
         res.status(201).json({ message: 'Booking created', booking: normalizeBooking(booking) });
     } catch (err) { next(err); }
 });

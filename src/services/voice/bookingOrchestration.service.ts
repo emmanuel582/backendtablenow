@@ -13,6 +13,7 @@
 import supabase from '../../config/supabase';
 import logger from '../../lib/logger';
 import conversationReliabilityService from './conversationReliability.service';
+import { createBooking } from '../booking.service';
 import type {
   BookingOrchestrationResult,
   BookingSlots,
@@ -115,6 +116,7 @@ class BookingOrchestrationService {
     const guest_count = slots.guest_count.value as number;
     const date = slots.date.value as string;
     const time = slots.time.value as string;
+    const email = ((session.slots as any).email?.value as string | null) ?? undefined;
 
     const lang = session.language;
 
@@ -148,78 +150,30 @@ class BookingOrchestrationService {
       };
     }
 
-    let customerId: string | null = null;
     try {
-      const { data: existing } = await supabase
-        .from('customers')
-        .select('id')
-        .eq('restaurant_id', restaurant.id)
-        .eq('phone', phone)
-        .single();
+      const guestName = `${first_name} ${last_name}`.trim();
 
-      if (existing) {
-        customerId = existing.id;
-      } else {
-        const { data: created } = await supabase
-          .from('customers')
-          .insert({
-            restaurant_id: restaurant.id,
-            phone,
-            name: `${first_name} ${last_name}`.trim(),
-          })
-          .select('id')
-          .single();
-        customerId = created?.id ?? null;
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'unknown';
-      logger.error(
+      const newBooking = await createBooking(
         {
-          action: 'orchestrate_booking_customer',
-          call_id: session.call_id,
-          error: errMsg,
-        },
-        'Customer upsert failed'
-      );
-    }
-
-    try {
-      const { data: newBooking, error: insertError } = await supabase
-        .from('bookings')
-        .insert({
           restaurant_id: restaurant.id,
-          customer_id: customerId,
-          booked_for: `${date}T${time}:00`,
+          date,
+          time,
           covers: guest_count,
+          guest_name: guestName,
+          guest_email: email,
+          guest_phone: phone,
           source: 'phone',
-          status: 'confirmed',
-          guest_language: session.language,
-        })
-        .select('id')
-        .single();
-
-      if (insertError || !newBooking) {
-        logger.error(
-          {
-            action: 'orchestrate_booking_insert',
-            call_id: session.call_id,
-            restaurant_id: restaurant.id,
-            error: insertError?.message,
-          },
-          'Booking insert failed'
-        );
-
-        const message =
-          lang === 'en'
-            ? 'I could not complete the booking. Please call the restaurant directly.'
-            : "Je n'ai pas pu finaliser la réservation. Je vous invite à rappeler le restaurant.";
-
-        return {
-          status: 'failed',
-          reason: insertError?.message ?? 'unknown_db_error',
-          message,
-        };
-      }
+          guest_language: lang as 'fr' | 'en',
+          idempotency_key: session.call_id,
+        },
+        session.call_id,
+        {
+          id: restaurant.id,
+          name: restaurant.name,
+          address: restaurant.address,
+          phone: restaurant.phone,
+        }
+      );
 
       logger.info(
         {
@@ -247,6 +201,7 @@ class BookingOrchestrationService {
         {
           action: 'orchestrate_booking_exception',
           call_id: session.call_id,
+          restaurant_id: restaurant.id,
           error: errMsg,
         },
         'Booking orchestration threw'
