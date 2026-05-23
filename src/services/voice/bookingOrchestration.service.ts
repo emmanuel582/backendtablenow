@@ -14,6 +14,9 @@ import supabase from '../../config/supabase';
 import logger from '../../lib/logger';
 import conversationReliabilityService from './conversationReliability.service';
 import { createBooking } from '../booking.service';
+import bookingLogging from '../bookingLogging.service';
+import reliabilityLogging from './reliabilityLogging.service';
+import errorTracking from '../errorTracking.service';
 import type {
   BookingOrchestrationResult,
   BookingSlots,
@@ -85,6 +88,12 @@ class BookingOrchestrationService {
         'Booking blocked by reliability guard'
       );
 
+      reliabilityLogging.backendGuardBlocked({
+        call_id: session.call_id,
+        restaurant_id: restaurant.id,
+        reason: guard.reason || 'unknown',
+      });
+
       const lang = session.language;
       const message =
         lang === 'en'
@@ -97,6 +106,11 @@ class BookingOrchestrationService {
         message,
       };
     }
+
+    reliabilityLogging.backendGuardPassed({
+      call_id: session.call_id,
+      restaurant_id: restaurant.id,
+    });
 
     const slots = session.slots as Required<
       Pick<
@@ -127,7 +141,24 @@ class BookingOrchestrationService {
       guest_count
     );
 
-    if (!availability.available) {
+    if (availability.available) {
+      reliabilityLogging.availabilityCheckPassed({
+        call_id: session.call_id,
+        restaurant_id: restaurant.id,
+        date,
+        time,
+        covers: guest_count,
+      });
+    } else {
+      reliabilityLogging.availabilityCheckBlocked({
+        call_id: session.call_id,
+        restaurant_id: restaurant.id,
+        date,
+        time,
+        covers: guest_count,
+        alternatives: [...availability.alternatives],
+      });
+
       logger.info(
         {
           action: 'orchestrate_booking',
@@ -185,6 +216,18 @@ class BookingOrchestrationService {
         'Voice booking created'
       );
 
+      bookingLogging.bookingCreated({
+        booking_id: newBooking.id,
+        restaurant_id: restaurant.id,
+        source: 'phone',
+        guest_name: guestName,
+        guest_email: email,
+        date,
+        time,
+        covers: guest_count,
+        call_id: session.call_id,
+      });
+
       const message =
         lang === 'en'
           ? `Your booking is confirmed for ${guest_count} ${guest_count > 1 ? 'guests' : 'guest'} on ${date} at ${time}.`
@@ -206,6 +249,19 @@ class BookingOrchestrationService {
         },
         'Booking orchestration threw'
       );
+
+      bookingLogging.bookingFailed({
+        restaurant_id: restaurant.id,
+        source: 'phone',
+        reason: errMsg,
+        call_id: session.call_id,
+      });
+
+      errorTracking.bookingCreationFailed({
+        restaurant_id: restaurant.id,
+        reason: errMsg,
+        call_id: session.call_id,
+      });
 
       const message =
         lang === 'en'

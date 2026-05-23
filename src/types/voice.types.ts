@@ -205,6 +205,9 @@ export type CallLogEventType =
   | 'booking_succeeded'
   | 'booking_failed'
   | 'fallback_to_human'
+  | 'availability_checked'
+  | 'reliability_gate_passed'
+  | 'reliability_gate_blocked'
   | 'provider_error'
   | 'backend_error';
 
@@ -212,6 +215,46 @@ export interface CallLogEvent {
   call_id: string;
   restaurant_id: string | null;
   event_type: CallLogEventType;
+  payload: Readonly<Record<string, unknown>>;
+  timestamp: string;
+}
+
+// ── Booking Events ──────────────────────────────────────────────────────────
+
+export type BookingEventType =
+  | 'booking_created'
+  | 'booking_confirmed'
+  | 'booking_cancelled'
+  | 'booking_modified'
+  | 'booking_failed'
+  | 'availability_checked'
+  | 'customer_upserted';
+
+export interface BookingEvent {
+  booking_id?: string | null;
+  restaurant_id: string;
+  event_type: BookingEventType;
+  source: 'manual' | 'phone' | 'web' | 'api';
+  payload: Readonly<Record<string, unknown>>;
+  timestamp: string;
+  call_id?: string | null;
+}
+
+// ── Reliability Events ──────────────────────────────────────────────────────
+
+export type ReliabilityGate =
+  | 'intent_classification'
+  | 'critical_field_missing'
+  | 'critical_field_inferred'
+  | 'final_confirmation_missing'
+  | 'availability_check'
+  | 'backend_guard';
+
+export interface ReliabilityEvent {
+  call_id: string;
+  restaurant_id: string;
+  event_type: 'gate_passed' | 'gate_blocked';
+  gate: ReliabilityGate;
   payload: Readonly<Record<string, unknown>>;
   timestamp: string;
 }
