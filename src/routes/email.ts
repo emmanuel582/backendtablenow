@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { authenticateToken, AuthRequest, validateBCCSecret } from '../middleware/auth';
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
+import { createBooking } from '../services/booking.service';
+import logger from '../lib/logger';
 
 const router = Router();
 
@@ -74,19 +76,24 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
         };
 
         // If it's a new booking, create it in our system
-        if (parsedData.type === 'new' && parsedData.email) {
-            const { data: booking } = await supabase.from('bookings').insert({
-                restaurant_id: restaurantId,
-                guest_name: parsedData.guestName || 'Guest',
-                guest_email: parsedData.email,
-                guest_phone: parsedData.phone,
-                booking_date: parsedData.date,
-                booking_time: parsedData.time,
-                party_size: parsedData.partySize,
-                status: 'confirmed',
-                source: parsedData.source,
-                confirmation_number: parsedData.confirmationNumber || `EXT-${Date.now()}`
-            }).select().single();
+        if (parsedData.type === 'new' && parsedData.email && parsedData.date && parsedData.time) {
+            const booking = await createBooking(
+                {
+                    restaurant_id: restaurantId,
+                    date: parsedData.date,
+                    time: parsedData.time,
+                    covers: parsedData.partySize || 1,
+                    guest_name: parsedData.guestName || 'Guest',
+                    guest_email: parsedData.email,
+                    guest_phone: parsedData.phone || null,
+                    source: 'web'
+                },
+                `bcc-email-${restaurantId}`,
+                {
+                    id: restaurantId,
+                    name: restaurant?.name || 'Restaurant'
+                }
+            );
 
             // 1. HubSpot Sync
             try {

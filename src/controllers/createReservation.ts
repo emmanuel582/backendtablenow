@@ -8,6 +8,7 @@ import supabase from '../config/supabase';
 import calendarService from '../services/calendar.service';
 import emailService from '../services/email.service';
 import logger, { logActionStart } from '../lib/logger';
+import { createBooking } from '../services/booking.service';
 
 // ============================================
 // Verrou par restaurant (in-memory, VPS unique)
@@ -199,6 +200,13 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 .eq('id', restaurant_id)
                 .single();
 
+            if (!restaurant) {
+                return res.status(404).json({
+                    success: false,
+                    reason: 'restaurant_not_found'
+                });
+            }
+
             // ── Find or create customer — keyed by (restaurant_id, phone) ──
             let customerId: string | null = null;
             {
@@ -225,7 +233,42 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 }
             }
 
-            // Internal object used by calendar/email helpers
+            // Booking creation via unified service
+            const newBooking = await createBooking(
+                {
+                    restaurant_id,
+                    date,
+                    time,
+                    covers: coversInt,
+                    guest_name: `${first_name} ${last_name}`.trim(),
+                    guest_email: email || null,
+                    guest_phone: phone || null,
+                    special_requests: occasion || null,
+                    source: 'phone',
+                    guest_language: guestLanguage
+                },
+                `create-reservation-${restaurant_id}`,
+                {
+                    id: restaurant_id,
+                    name: restaurant.name,
+                    address: restaurant.address || '',
+                    phone: restaurant.phone || '',
+                    google_calendar_tokens: restaurant.google_calendar_tokens
+                }
+            );
+
+            logger.info(
+                {
+                    action: 'booking_created',
+                    restaurant_id: newBooking.restaurant_id,
+                    booking_id: newBooking.id,
+                    source: 'phone',
+                    covers: coversInt
+                },
+                'Booking successfully created'
+            );
+
+            // Internal object used by PMS BCC integration
             const reservationInfo = {
                 restaurant_id,
                 first_name, last_name, phone,
@@ -234,40 +277,8 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 occasion: occasion || null,
                 date, time,
                 language: guestLanguage,
-                booking_id: '' // set after insert
+                booking_id: newBooking.id
             };
-
-            // Booking insert — new schema
-            const bookedFor = `${date}T${time}:00`;
-            const { data: newBooking, error: insertError } = await supabase
-                .from('bookings')
-                .insert({
-                    restaurant_id,
-                    customer_id: customerId,
-                    booked_for: bookedFor,
-                    covers: coversInt,
-                    special_requests: occasion || null,
-                    source: 'phone',
-                    status: 'confirmed',
-                    guest_language: guestLanguage
-                })
-                .select()
-                .single();
-
-            if (insertError) throw insertError;
-
-            logger.info(
-                {
-                    action: 'booking_created',
-                    restaurant_id: newBooking.restaurant_id,
-                    booking_id: newBooking.id,
-                    customer_id: customerId,
-                    source: 'phone',
-                    covers: coversInt
-                },
-                'Booking successfully created'
-            );
-            reservationInfo.booking_id = newBooking.id;
 
             // Étapes non-bloquantes après libération du verrou
             let calendarEventId: string | null = null;
