@@ -1,0 +1,269 @@
+// ============================================
+// Booking Orchestration Service — Voice Core
+//
+// Responsibilities:
+//   - Check availability for a confirmed slot
+//   - Create a booking ONLY when conversationReliability has authorised it
+//   - Never let the voice agent claim success before the backend returns
+//   - Return a typed result the controller can speak back safely
+//
+// This service depends only on Supabase RPC + the typed BookingSlots payload.
+// ============================================
+
+import supabase from '../../config/supabase';
+import logger from '../../lib/logger';
+import conversationReliabilityService from './conversationReliability.service';
+import type {
+  BookingOrchestrationResult,
+  BookingSlots,
+  ResolvedVoiceRestaurant,
+  VoiceSessionState,
+} from '../../types/voice.types';
+
+interface AvailabilityCheck {
+  available: boolean;
+  alternatives: readonly string[];
+}
+
+class BookingOrchestrationService {
+  async checkAvailability(
+    restaurantId: string,
+    date: string,
+    time: string,
+    covers: number
+  ): Promise<AvailabilityCheck> {
+    const { data, error } = await supabase.rpc('get_available_slots', {
+      p_restaurant_id: restaurantId,
+      p_date: date,
+      p_covers: covers,
+    });
+
+    if (error || !data) {
+      logger.error(
+        { action: 'check_availability', error: error?.message },
+        'Availability RPC failed'
+      );
+      return { available: false, alternatives: [] };
+    }
+
+    const slots = data as Array<{
+      slot_time?: string;
+      available?: boolean;
+    }>;
+
+    const requested = slots.find(
+      (s) => s.slot_time?.slice(0, 5) === time.slice(0, 5)
+    );
+
+    if (requested?.available) {
+      return { available: true, alternatives: [] };
+    }
+
+    const alternatives = slots
+      .filter((s) => s.available === true)
+      .map((s) => s.slot_time?.slice(0, 5))
+      .filter((t): t is string => typeof t === 'string')
+      .slice(0, 3);
+
+    return { available: false, alternatives };
+  }
+
+  async orchestrateBooking(
+    restaurant: ResolvedVoiceRestaurant,
+    session: VoiceSessionState
+  ): Promise<BookingOrchestrationResult> {
+    const guard = conversationReliabilityService.canPerformBackendAction(session);
+
+    if (!guard.allowed) {
+      logger.warn(
+        {
+          action: 'orchestrate_booking',
+          call_id: session.call_id,
+          reason: guard.reason,
+        },
+        'Booking blocked by reliability guard'
+      );
+
+      const lang = session.language;
+      const message =
+        lang === 'en'
+          ? 'I need a few more details before confirming the booking.'
+          : "J'ai besoin de quelques précisions avant de confirmer la réservation.";
+
+      return {
+        status: 'needs_clarification',
+        missing_fields: [],
+        message,
+      };
+    }
+
+    const slots = session.slots as Required<
+      Pick<
+        BookingSlots,
+        | 'first_name'
+        | 'last_name'
+        | 'phone'
+        | 'guest_count'
+        | 'date'
+        | 'time'
+      >
+    >;
+
+    const first_name = slots.first_name.value as string;
+    const last_name = slots.last_name.value as string;
+    const phone = slots.phone.value as string;
+    const guest_count = slots.guest_count.value as number;
+    const date = slots.date.value as string;
+    const time = slots.time.value as string;
+
+    const lang = session.language;
+
+    const availability = await this.checkAvailability(
+      restaurant.id,
+      date,
+      time,
+      guest_count
+    );
+
+    if (!availability.available) {
+      logger.info(
+        {
+          action: 'orchestrate_booking',
+          call_id: session.call_id,
+          restaurant_id: restaurant.id,
+          alternatives: availability.alternatives,
+        },
+        'Slot unavailable'
+      );
+
+      const message =
+        lang === 'en'
+          ? `That slot is no longer available.${availability.alternatives.length ? ` Available times nearby: ${availability.alternatives.join(', ')}.` : ''}`
+          : `Ce créneau n'est plus disponible.${availability.alternatives.length ? ` Créneaux proches disponibles : ${availability.alternatives.join(', ')}.` : ''}`;
+
+      return {
+        status: 'unavailable',
+        alternatives: availability.alternatives,
+        message,
+      };
+    }
+
+    let customerId: string | null = null;
+    try {
+      const { data: existing } = await supabase
+        .from('customers')
+        .select('id')
+        .eq('restaurant_id', restaurant.id)
+        .eq('phone', phone)
+        .single();
+
+      if (existing) {
+        customerId = existing.id;
+      } else {
+        const { data: created } = await supabase
+          .from('customers')
+          .insert({
+            restaurant_id: restaurant.id,
+            phone,
+            name: `${first_name} ${last_name}`.trim(),
+          })
+          .select('id')
+          .single();
+        customerId = created?.id ?? null;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'unknown';
+      logger.error(
+        {
+          action: 'orchestrate_booking_customer',
+          call_id: session.call_id,
+          error: errMsg,
+        },
+        'Customer upsert failed'
+      );
+    }
+
+    try {
+      const { data: newBooking, error: insertError } = await supabase
+        .from('bookings')
+        .insert({
+          restaurant_id: restaurant.id,
+          customer_id: customerId,
+          booked_for: `${date}T${time}:00`,
+          covers: guest_count,
+          source: 'phone',
+          status: 'confirmed',
+          guest_language: session.language,
+        })
+        .select('id')
+        .single();
+
+      if (insertError || !newBooking) {
+        logger.error(
+          {
+            action: 'orchestrate_booking_insert',
+            call_id: session.call_id,
+            restaurant_id: restaurant.id,
+            error: insertError?.message,
+          },
+          'Booking insert failed'
+        );
+
+        const message =
+          lang === 'en'
+            ? 'I could not complete the booking. Please call the restaurant directly.'
+            : "Je n'ai pas pu finaliser la réservation. Je vous invite à rappeler le restaurant.";
+
+        return {
+          status: 'failed',
+          reason: insertError?.message ?? 'unknown_db_error',
+          message,
+        };
+      }
+
+      logger.info(
+        {
+          action: 'orchestrate_booking_success',
+          call_id: session.call_id,
+          restaurant_id: restaurant.id,
+          booking_id: newBooking.id,
+        },
+        'Voice booking created'
+      );
+
+      const message =
+        lang === 'en'
+          ? `Your booking is confirmed for ${guest_count} ${guest_count > 1 ? 'guests' : 'guest'} on ${date} at ${time}.`
+          : `Votre réservation est confirmée pour ${guest_count} personne${guest_count > 1 ? 's' : ''} le ${date} à ${time}.`;
+
+      return {
+        status: 'success',
+        booking_id: newBooking.id,
+        message,
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'unknown';
+      logger.error(
+        {
+          action: 'orchestrate_booking_exception',
+          call_id: session.call_id,
+          error: errMsg,
+        },
+        'Booking orchestration threw'
+      );
+
+      const message =
+        lang === 'en'
+          ? 'I encountered a technical issue. Please call the restaurant directly.'
+          : 'Une erreur technique est survenue. Je vous invite à rappeler le restaurant.';
+
+      return {
+        status: 'failed',
+        reason: errMsg,
+        message,
+      };
+    }
+  }
+}
+
+export default new BookingOrchestrationService();
