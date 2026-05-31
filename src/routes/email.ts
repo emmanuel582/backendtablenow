@@ -76,8 +76,8 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
         };
 
         // If it's a new booking, create it in our system
-        if (parsedData.type === 'new' && parsedData.email && parsedData.date && parsedData.time) {
-            const booking = await createBooking(
+        if (parsedData.type === 'new' && parsedData.email) {
+            if (!parsedData.date || !parsedData.time) { res.status(400).json({ success: false, message: "Missing date or time" }); return; } const booking = await createBooking(
                 {
                     restaurant_id: restaurantId,
                     date: parsedData.date,

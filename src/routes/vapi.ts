@@ -10,9 +10,6 @@ import { VapiWebhookPayloadSchema } from '../schemas/vapiWebhookSchema';
 import vapiController from '../controllers/vapi.controller';
 import phoneResolutionService from '../services/phoneResolution.service';
 import { createBooking } from '../services/booking.service';
-import bookingOrchestrationService from '../services/voice/bookingOrchestration.service';
-import { validateBookingPayload } from '../services/voice/vapiBookingPayload.validator';
-import type { VoiceSessionState, ResolvedVoiceRestaurant } from '../types/voice.types';
 
 const router = Router();
 
@@ -285,42 +282,9 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         language = req.body.language === 'en' ? 'en' : 'fr';
     }
 
-    // Defensive validation BEFORE we ever synthesize a VoiceSessionState with
-    // status='confirmed'. We MUST NOT trust that VAPI only fires this hook
-    // post-collection — a malformed or premature call must be rejected here,
-    // not promoted to a confirmed slot and slipped past the orchestration gates.
-    const validation = validateBookingPayload({
-        restaurantId,
-        date,
-        time,
-        covers,
-        firstName,
-        lastName,
-        guestPhone,
-        guestEmail,
-    });
-
-    if (!validation.valid) {
-        console.warn('⚠️ create-booking rejected — incomplete/invalid payload', {
-            missing: validation.missing,
-            invalid: validation.invalid,
-            callId: message?.call?.id,
-        });
-        const payload = {
-            success: false,
-            status: 'needs_clarification' as const,
-            message: validation.message,
-            missing: validation.missing,
-            invalid: validation.invalid,
-        };
-        return toolCall
-            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-            : res.status(400).json(payload);
+    if (!restaurantId || !date || !time || !covers || !firstName || !lastName || !guestPhone) {
+        return res.status(400).json({ error: 'Missing required fields' });
     }
-
-    // Use normalized values from the validator (trimmed, parsed) from here on.
-    ({ restaurantId, date, time, covers, firstName, lastName, guestPhone } = validation.data);
-    guestEmail = validation.data.guestEmail || '';
 
     const guestName = `${firstName} ${lastName}`.trim();
 
@@ -333,21 +297,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             : res.status(404).json(payload);
     }
 
-    // Booking trace — redact PII (no name, no full phone) for GDPR-safe logs.
-    // We keep correlation IDs (restaurant + call + date/time/covers) for debugging.
-    const phoneRedacted = guestPhone
-        ? `${guestPhone.slice(0, 3)}******${guestPhone.slice(-2)}`
-        : 'none';
-    console.log('📝 create-booking', {
-        restaurant_id: resolvedId,
-        call_id: message?.call?.id || null,
-        date,
-        time,
-        covers,
-        customer_present: true,
-        phone_redacted: phoneRedacted,
-        email_present: !!guestEmail,
-    });
+    console.log(`📝 create-booking: ${resolvedId} — ${guestName} ${date} ${time} x${covers}`);
 
     const { data: restaurant } = await supabase
         .from('restaurants')
@@ -362,64 +312,71 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             : res.status(404).json(payload);
     }
 
-    // Normalize time
-    const normalizedTime = normalizeTime(time) || time;
+    // Find or create customer
+    let customerId: string | null = null;
+    if (guestPhone) {
+        const { data: existing } = await supabase
+            .from('customers')
+            .select('id')
+            .eq('restaurant_id', resolvedId)
+            .eq('phone', guestPhone)
+            .single();
+        if (existing) {
+            customerId = existing.id;
+        } else {
+            const { data: created } = await supabase
+                .from('customers')
+                .insert({ restaurant_id: resolvedId, phone: guestPhone, name: guestName, email: guestEmail || null })
+                .select('id')
+                .single();
+            customerId = created?.id || null;
+        }
+    }
 
-    // Build VoiceSessionState from VAPI tool-call params.
-    // VAPI gathered fields via conversation → mark as 'confirmed' for orchestration gates.
-    const callId = message?.call?.id || `vapi-create-booking-${Date.now()}`;
-    const session: VoiceSessionState = {
-        call_id: callId,
-        restaurant_id: resolvedId,
-        intent: 'new_booking',
-        language,
-        slots: {
-            first_name: { value: firstName, status: 'confirmed', source: 'user_input' },
-            last_name: { value: lastName, status: 'confirmed', source: 'user_input' },
-            phone: { value: guestPhone, status: 'confirmed', source: 'user_input' },
-            guest_count: { value: covers, status: 'confirmed', source: 'user_input' },
-            date: { value: date, status: 'confirmed', source: 'user_input' },
-            time: { value: normalizedTime, status: 'confirmed', source: 'user_input' },
-            email: { value: guestEmail || null, status: guestEmail ? 'confirmed' : 'missing', source: guestEmail ? 'user_input' : 'unknown' },
-        },
-        confirmation_status: 'confirmed',
-        backend_action_status: 'idle',
-    };
+        // Normalize time
+        const normalizedTime = normalizeTime(time) || time;
 
-    const voiceRestaurant: ResolvedVoiceRestaurant = {
-        id: resolvedId,
-        name: restaurant.name,
-        slug: restaurant.slug || '',
-        address: restaurant.address || '',
-        phone: restaurant.phone || '',
-        opening_hours: restaurant.opening_hours,
-        language,
-    };
+        try {
+            const booking = await createBooking(
+                {
+                    restaurant_id: resolvedId,
+                    date,
+                    time: normalizedTime,
+                    covers,
+                    guest_name: guestName,
+                    guest_email: guestEmail || null,
+                    guest_phone: guestPhone || null,
+                    source: 'phone',
+                    guest_language: language
+                },
+                'vapi-create-booking',
+                {
+                    id: resolvedId,
+                    name: restaurant.name,
+                    address: restaurant.address || '',
+                    phone: restaurant.phone || '',
+                    google_calendar_tokens: restaurant.google_calendar_tokens
+                }
+            );
 
-    try {
-        const result = await bookingOrchestrationService.orchestrateBooking(voiceRestaurant, session);
+            console.log(`✅ Booking created: ${booking.id}`);
 
-        if (result.status === 'success') {
-            console.log(`✅ Booking created via orchestration: ${result.booking_id}`);
-            const payload = { success: true, booking_id: result.booking_id, message: result.message };
+            const successMessage = language === 'en'
+                ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
+                : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
+
+            const payload = {
+                success: true,
+                booking_id: booking.id,
+                message: successMessage
+            };
             return toolCall
                 ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
                 : res.json(payload);
+        } catch (error: any) {
+            console.error('❌ create-booking error:', error);
+            res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
         }
-
-        // Orchestration returned a non-success status (unavailable / failed / needs_clarification)
-        const httpStatus = result.status === 'unavailable' ? 409 : 422;
-        const payload: Record<string, unknown> = { success: false, message: result.message };
-        if (result.status === 'unavailable') payload.alternatives = result.alternatives;
-        if (result.status === 'failed') payload.reason = result.reason;
-
-        return toolCall
-            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-            : res.status(httpStatus).json(payload);
-    } catch (error: any) {
-        console.error('❌ create-booking error:', error);
-        return res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
-    }
 });
 
 

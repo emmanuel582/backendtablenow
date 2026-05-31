@@ -3,8 +3,6 @@ import logger from '../lib/logger';
 import { DatabaseError, NotFoundError, ConflictError } from '../lib/errors';
 import emailService from './email.service';
 import calendarService from './calendar.service';
-import bookingLogging from './bookingLogging.service';
-import errorTracking from './errorTracking.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
@@ -197,25 +195,10 @@ export async function createBooking(
 
     if (error || !booking) {
         log.error({ error }, 'Booking insert failed');
-        errorTracking.bookingCreationFailed({
-            restaurant_id,
-            reason: error?.message || 'database_error',
-        });
         throw new DatabaseError('Failed to create booking', error);
     }
 
     log.info({ bookingId: booking.id, source }, 'Booking created');
-
-    bookingLogging.bookingCreated({
-        booking_id: booking.id,
-        restaurant_id,
-        source: source as 'manual' | 'phone' | 'web',
-        guest_name,
-        guest_email: guest_email || undefined,
-        date,
-        time,
-        covers,
-    });
 
     // Trigger email and calendar side effects (non-blocking)
     if (restaurant) {

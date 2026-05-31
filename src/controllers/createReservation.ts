@@ -200,13 +200,6 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 .eq('id', restaurant_id)
                 .single();
 
-            if (!restaurant) {
-                return res.status(404).json({
-                    success: false,
-                    reason: 'restaurant_not_found'
-                });
-            }
-
             // ── Find or create customer — keyed by (restaurant_id, phone) ──
             let customerId: string | null = null;
             {
@@ -250,10 +243,10 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                 `create-reservation-${restaurant_id}`,
                 {
                     id: restaurant_id,
-                    name: restaurant.name,
-                    address: restaurant.address || '',
-                    phone: restaurant.phone || '',
-                    google_calendar_tokens: restaurant.google_calendar_tokens
+                    name: restaurant?.name,
+                    address: restaurant?.address || '',
+                    phone: restaurant?.phone || '',
+                    google_calendar_tokens: restaurant?.google_calendar_tokens
                 }
             );
 
