@@ -312,71 +312,50 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             : res.status(404).json(payload);
     }
 
-    // Find or create customer
-    let customerId: string | null = null;
-    if (guestPhone) {
-        const { data: existing } = await supabase
-            .from('customers')
-            .select('id')
-            .eq('restaurant_id', resolvedId)
-            .eq('phone', guestPhone)
-            .single();
-        if (existing) {
-            customerId = existing.id;
-        } else {
-            const { data: created } = await supabase
-                .from('customers')
-                .insert({ restaurant_id: resolvedId, phone: guestPhone, name: guestName, email: guestEmail || null })
-                .select('id')
-                .single();
-            customerId = created?.id || null;
-        }
+    // Normalize time
+    const normalizedTime = normalizeTime(time) || time;
+
+    try {
+        const booking = await createBooking(
+            {
+                restaurant_id: resolvedId,
+                date,
+                time: normalizedTime,
+                covers,
+                guest_name: guestName,
+                guest_email: guestEmail || null,
+                guest_phone: guestPhone || null,
+                source: 'phone',
+                guest_language: language
+            },
+            'vapi-create-booking',
+            {
+                id: resolvedId,
+                name: restaurant.name,
+                address: restaurant.address || '',
+                phone: restaurant.phone || '',
+                google_calendar_tokens: restaurant.google_calendar_tokens
+            }
+        );
+
+        console.log(`✅ Booking created: ${booking.id}`);
+
+        const successMessage = language === 'en'
+            ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
+            : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
+
+        const payload = {
+            success: true,
+            booking_id: booking.id,
+            message: successMessage
+        };
+        return toolCall
+            ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
+            : res.json(payload);
+    } catch (error: any) {
+        console.error('❌ create-booking error:', error);
+        res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
     }
-
-        // Normalize time
-        const normalizedTime = normalizeTime(time) || time;
-
-        try {
-            const booking = await createBooking(
-                {
-                    restaurant_id: resolvedId,
-                    date,
-                    time: normalizedTime,
-                    covers,
-                    guest_name: guestName,
-                    guest_email: guestEmail || null,
-                    guest_phone: guestPhone || null,
-                    source: 'phone',
-                    guest_language: language
-                },
-                'vapi-create-booking',
-                {
-                    id: resolvedId,
-                    name: restaurant.name,
-                    address: restaurant.address || '',
-                    phone: restaurant.phone || '',
-                    google_calendar_tokens: restaurant.google_calendar_tokens
-                }
-            );
-
-            console.log(`✅ Booking created: ${booking.id}`);
-
-            const successMessage = language === 'en'
-                ? `Booking confirmed for ${firstName} ${lastName}, on ${date} at ${normalizedTime} for ${covers} ${covers > 1 ? 'guests' : 'guest'}.`
-                : `Réservation confirmée pour ${firstName} ${lastName}, le ${date} à ${normalizedTime} pour ${covers} personne${covers > 1 ? 's' : ''}.`;
-
-            const payload = {
-                success: true,
-                booking_id: booking.id,
-                message: successMessage
-            };
-            return toolCall
-                ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
-                : res.json(payload);
-        } catch (error: any) {
-            console.error('❌ create-booking error:', error);
-            res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
-        }
 });
 
 
