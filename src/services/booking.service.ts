@@ -5,6 +5,7 @@ import emailService from './email.service';
 import calendarService from './calendar.service';
 import bookingLogging from './bookingLogging.service';
 import errorTracking from './errorTracking.service';
+import outboxService from './outbox.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
@@ -150,19 +151,22 @@ export async function createBooking(
 
     const log = logger.child({ correlationId, restaurant_id, date, time, covers, source });
 
-    // Idempotency check — prevent duplicate bookings on VAPI retry
-    if (idempotency_key) {
-        const { data: existing } = await supabase
-            .from('bookings')
-            .select('id, status')
-            .eq('restaurant_id', restaurant_id)
-            .eq('call_id', idempotency_key)
-            .maybeSingle();
+    // REQUIRE idempotency_key
+    if (!idempotency_key) {
+        log.error({}, 'Missing idempotency_key (required for deduplication)');
+        throw new Error('idempotency_key is required');
+    }
 
-        if (existing) {
-            log.info({ bookingId: existing.id }, 'Idempotent booking — returning existing');
-            return existing;
-        }
+    // Idempotency check — DB UNIQUE constraint will enforce this
+    const { data: existing } = await supabase
+        .from('bookings')
+        .select('id, status')
+        .eq('idempotency_key', idempotency_key)
+        .maybeSingle();
+
+    if (existing) {
+        log.info({ bookingId: existing.id }, 'Idempotent booking — returning existing');
+        return existing;
     }
 
     const bookedFor = `${date}T${time}:00`;
@@ -189,7 +193,8 @@ export async function createBooking(
             special_requests: special_requests || null,
             source,
             status:        'confirmed',
-            call_id:       idempotency_key || null,
+            call_id:       idempotency_key,
+            idempotency_key, // NEW: UNIQUE constraint in DB
             guest_language: guest_language
         })
         .select()
@@ -217,7 +222,27 @@ export async function createBooking(
         covers,
     });
 
-    // Trigger email and calendar side effects (non-blocking)
+    // NEW: Create outbox events for async processing (no PII in payload)
+    const channels: ('email' | 'calendar')[] = [];
+    if (guest_email) channels.push('email');
+    if (restaurant?.google_calendar_tokens) channels.push('calendar');
+
+    if (channels.length > 0) {
+        try {
+            await outboxService.createOutboxEvents(
+                booking.id,
+                restaurant_id,
+                correlationId || idempotency_key,
+                channels
+            );
+            log.info({ eventCount: channels.length }, 'Outbox events created');
+        } catch (err) {
+            log.warn({ err }, 'Failed to create outbox events (will queue on next poll)');
+        }
+    }
+
+    // DEPRECATED: Trigger email and calendar side effects (non-blocking)
+    // TODO: Remove after outbox worker is stable
     if (restaurant) {
         triggerBookingSideEffects(restaurant, booking, guest_name, guest_email, guest_phone, covers, date, time, guest_language, log);
     }

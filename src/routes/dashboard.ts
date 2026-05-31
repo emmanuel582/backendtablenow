@@ -321,4 +321,25 @@ router.get('/calls', async (req: AuthRequest, res: Response, next) => {
     } catch (err) { next(err); }
 });
 
+// ─── POST /dashboard/outbox/process ───────────────────────────────────────────
+// Process pending outbox events (send emails, create calendar events)
+// Protected by INTERNAL_SECRET — no JWT needed
+// Can be called by cron job or manual invocation
+
+router.post('/outbox/process', async (req: Request, res: Response) => {
+    const secret = req.headers['x-internal-secret'];
+    if (!secret || secret !== config.auth.internalSecret) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    try {
+        const { processOutboxWorker } = await import('../workers/outbox-worker');
+        const result = await processOutboxWorker();
+        res.json(result);
+    } catch (err) {
+        logger.error({ err }, 'Outbox worker error');
+        res.status(500).json({ error: 'Worker failed' });
+    }
+});
+
 export default router;
