@@ -43,36 +43,22 @@ export async function createOutboxEvents(
   }
 }
 
-// Claim next batch (concurrency-safe: UPDATE + check timestamp)
+// Claim next batch (concurrency-safe: atomic via Postgres FOR UPDATE SKIP LOCKED)
 export async function claimPendingEvents(limit = 10) {
-  const now = new Date();
-
-  // Fetch pending events that are ready (next_attempt_at is null or past)
-  const { data: events, error } = await supabase
-    .from('outbox_events')
-    .select('*')
-    .eq('status', 'pending')
-    .or(`next_attempt_at.is.null,next_attempt_at.lte.${now.toISOString()}`)
-    .limit(limit);
+  // Use RPC to call atomic Postgres function claim_outbox_events()
+  // This function selects pending events with FOR UPDATE SKIP LOCKED,
+  // marks them as 'claimed', and returns them in a single transaction.
+  // Two concurrent workers will claim different batches (no overlap).
+  const { data: events, error } = await supabase.rpc('claim_outbox_events', {
+    batch_size: limit,
+  });
 
   if (error) {
-    logger.error({ error }, 'Failed to fetch pending outbox events');
+    logger.error({ error }, 'Failed to claim pending outbox events via RPC');
     return [];
   }
 
   if (!events || events.length === 0) return [];
-
-  // Mark as claimed atomically
-  const eventIds = events.map(e => e.id);
-  const { error: claimError } = await supabase
-    .from('outbox_events')
-    .update({ status: 'claimed' })
-    .in('id', eventIds);
-
-  if (claimError) {
-    logger.warn({ claimError }, 'Failed to claim outbox events (will retry next batch)');
-    return [];
-  }
 
   return events as OutboxEvent[];
 }

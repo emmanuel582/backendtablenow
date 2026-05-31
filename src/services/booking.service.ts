@@ -154,7 +154,7 @@ export async function createBooking(
     // REQUIRE idempotency_key
     if (!idempotency_key) {
         log.error({}, 'Missing idempotency_key (required for deduplication)');
-        throw new Error('idempotency_key is required');
+        throw new ConflictError('idempotency_key is required');
     }
 
     // Idempotency check — DB UNIQUE constraint will enforce this
