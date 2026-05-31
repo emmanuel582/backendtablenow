@@ -220,8 +220,6 @@ class BookingOrchestrationService {
         booking_id: newBooking.id,
         restaurant_id: restaurant.id,
         source: 'phone',
-        guest_name: guestName,
-        guest_email: email,
         date,
         time,
         covers: guest_count,

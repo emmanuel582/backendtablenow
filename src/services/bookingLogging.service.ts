@@ -53,21 +53,18 @@ class BookingLoggingService {
     booking_id: string;
     restaurant_id: string;
     source: 'manual' | 'phone' | 'web';
-    guest_name: string;
-    guest_email?: string;
     date: string;
     time: string;
     covers: number;
     call_id?: string;
   }): void {
+    // NO PII in logs (GDPR/CCPA). Only non-identifying booking metadata.
     this.emit({
       booking_id: input.booking_id,
       restaurant_id: input.restaurant_id,
       event_type: 'booking_created',
       source: input.source,
       payload: {
-        guest_name: input.guest_name,
-        guest_email: input.guest_email || null,
         date: input.date,
         time: input.time,
         covers: input.covers,

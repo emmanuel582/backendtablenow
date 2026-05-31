@@ -11,46 +11,27 @@ export interface OutboxEvent {
   restaurant_id: string;
   channel: 'email' | 'calendar';
   dedupe_key: string;
-  status: 'pending' | 'claimed' | 'done' | 'failed';
   attempts: number;
+  max_attempts: number;
   correlation_id?: string;
-  created_at: string;
 }
 
-// Create outbox events (after booking insert)
-export async function createOutboxEvents(
-  bookingId: string,
-  restaurantId: string,
-  correlationId: string,
-  channels: ('email' | 'calendar')[]
-) {
-  const events = channels.map(ch => ({
-    booking_id: bookingId,
-    restaurant_id: restaurantId,
-    channel: ch,
-    dedupe_key: `booking:${bookingId}:${ch}`,
-    correlation_id: correlationId,
-    status: 'pending' as const,
-  }));
-
-  const { error } = await supabase
-    .from('outbox_events')
-    .insert(events);
-
-  if (error) {
-    logger.error({ error, bookingId }, 'Failed to create outbox events');
-    throw new DatabaseError('Outbox event creation failed', error);
-  }
-}
+// NOTE: Outbox events are NO LONGER created here via a separate insert.
+// They are created atomically inside the Postgres function
+// create_booking_with_outbox() (booking + outbox in ONE transaction).
+// See migrations/001_booking_idempotency_outbox.sql.
 
 // Claim next batch (concurrency-safe: atomic via Postgres FOR UPDATE SKIP LOCKED)
-export async function claimPendingEvents(limit = 10) {
-  // Use RPC to call atomic Postgres function claim_outbox_events()
-  // This function selects pending events with FOR UPDATE SKIP LOCKED,
-  // marks them as 'claimed', and returns them in a single transaction.
-  // Two concurrent workers will claim different batches (no overlap).
+export async function claimPendingEvents(limit = 10, workerId?: string) {
+  // Atomic Postgres function claim_outbox_events():
+  //   - claims 'pending' events that are ready (next_attempt_at past/null)
+  //   - recovers 'claimed' events whose lease expired (crashed worker)
+  //   - increments attempts, sets claimed_at / claimed_by
+  //   - FOR UPDATE SKIP LOCKED ⇒ two workers never claim the same row
   const { data: events, error } = await supabase.rpc('claim_outbox_events', {
-    batch_size: limit,
+    p_batch_size: limit,
+    p_worker_id: workerId ?? null,
+    p_lease_seconds: 300,
   });
 
   if (error) {
@@ -125,7 +106,6 @@ export async function getEvent(eventId: string) {
 }
 
 export default {
-  createOutboxEvents,
   claimPendingEvents,
   markDone,
   markFailed,

@@ -1,11 +1,8 @@
 import supabase from '../config/supabase';
 import logger from '../lib/logger';
 import { DatabaseError, NotFoundError, ConflictError } from '../lib/errors';
-import emailService from './email.service';
-import calendarService from './calendar.service';
 import bookingLogging from './bookingLogging.service';
 import errorTracking from './errorTracking.service';
-import outboxService from './outbox.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
@@ -83,33 +80,8 @@ export async function getBookingById(id: string, restaurantId: string) {
     return normalizeBooking(data);
 }
 
-// ─── Customer Upsert (shared) ─────────────────────────────────────────────────
-
-async function upsertCustomer(restaurantId: string, name: string, phone: string, email?: string | null): Promise<string | null> {
-    if (!phone) return null;
-
-    try {
-        const { data: existing } = await supabase
-            .from('customers')
-            .select('id')
-            .eq('restaurant_id', restaurantId)
-            .eq('phone', phone)
-            .maybeSingle();
-
-        if (existing) return existing.id;
-
-        const { data: created } = await supabase
-            .from('customers')
-            .insert({ restaurant_id: restaurantId, phone, name, email: email || null })
-            .select('id')
-            .single();
-
-        return created?.id ?? null;
-    } catch (err) {
-        logger.error({ restaurantId, phone, error: err instanceof Error ? err.message : 'unknown' }, 'Customer upsert error');
-        return null;
-    }
-}
+// NOTE: Customer upsert moved INTO create_booking_with_outbox() so it shares
+// the same transaction as the booking + outbox insert.
 
 // ─── Create (unified endpoint) ────────────────────────────────────────────────
 // KEEP PUBLIC CONTRACT: POST /api/bookings handles all booking creation
@@ -157,51 +129,32 @@ export async function createBooking(
         throw new ConflictError('idempotency_key is required');
     }
 
-    // Idempotency check — DB UNIQUE constraint will enforce this
-    const { data: existing } = await supabase
-        .from('bookings')
-        .select('id, status')
-        .eq('idempotency_key', idempotency_key)
-        .maybeSingle();
+    // Determine which side-effect channels to queue (no PII in outbox)
+    const channels: ('email' | 'calendar')[] = [];
+    if (guest_email) channels.push('email');
+    if (restaurant?.google_calendar_tokens) channels.push('calendar');
 
-    if (existing) {
-        log.info({ bookingId: existing.id }, 'Idempotent booking — returning existing');
-        return existing;
-    }
+    // ATOMIC: booking + outbox events created in a SINGLE Postgres transaction.
+    // The RPC create_booking_with_outbox() handles idempotency, customer upsert,
+    // booking insert, and outbox insert. Either all commit or none do.
+    const { data: result, error } = await supabase.rpc('create_booking_with_outbox', {
+        p_restaurant_id:    restaurant_id,
+        p_idempotency_key:  idempotency_key,
+        p_booking_date:     date,
+        p_booking_time:     time,
+        p_covers:           covers,
+        p_guest_name:       guest_name,
+        p_guest_email:      guest_email || null,
+        p_guest_phone:      guest_phone || null,
+        p_special_requests: special_requests || null,
+        p_source:           source,
+        p_guest_language:   guest_language,
+        p_correlation_id:   correlationId || idempotency_key,
+        p_channels:         channels,
+    });
 
-    const bookedFor = `${date}T${time}:00`;
-
-    // Upsert customer (if phone provided) — shared logic
-    const customerId = await upsertCustomer(restaurant_id, guest_name, guest_phone!, guest_email);
-
-    // Insert booking — write ALL canonical fields at creation time
-    const { data: booking, error } = await supabase
-        .from('bookings')
-        .insert({
-            restaurant_id,
-            customer_id:   customerId,
-            // Canonical fields
-            booking_date:  date,
-            booking_time:  time,
-            party_size:    covers,
-            guest_name:    guest_name,
-            guest_email:   guest_email || null,
-            guest_phone:   guest_phone || null,
-            // Legacy fields (kept for backward compat)
-            booked_for:    bookedFor,
-            covers,
-            special_requests: special_requests || null,
-            source,
-            status:        'confirmed',
-            call_id:       idempotency_key,
-            idempotency_key, // NEW: UNIQUE constraint in DB
-            guest_language: guest_language
-        })
-        .select()
-        .single();
-
-    if (error || !booking) {
-        log.error({ error }, 'Booking insert failed');
+    if (error || !result || result.length === 0) {
+        log.error({ error }, 'create_booking_with_outbox failed');
         errorTracking.bookingCreationFailed({
             restaurant_id,
             reason: error?.message || 'database_error',
@@ -209,99 +162,35 @@ export async function createBooking(
         throw new DatabaseError('Failed to create booking', error);
     }
 
-    log.info({ bookingId: booking.id, source }, 'Booking created');
+    const row = result[0];
+
+    if (row.is_existing) {
+        log.info({ bookingId: row.booking_id }, 'Idempotent booking — returning existing');
+        return { id: row.booking_id, side_effects_status: row.side_effects_status };
+    }
+
+    log.info({ bookingId: row.booking_id, source, channels }, 'Booking + outbox created (atomic)');
 
     bookingLogging.bookingCreated({
-        booking_id: booking.id,
+        booking_id: row.booking_id,
         restaurant_id,
         source: source as 'manual' | 'phone' | 'web',
-        guest_name,
-        guest_email: guest_email || undefined,
         date,
         time,
         covers,
     });
 
-    // NEW: Create outbox events for async processing (no PII in payload)
-    const channels: ('email' | 'calendar')[] = [];
-    if (guest_email) channels.push('email');
-    if (restaurant?.google_calendar_tokens) channels.push('calendar');
-
-    if (channels.length > 0) {
-        try {
-            await outboxService.createOutboxEvents(
-                booking.id,
-                restaurant_id,
-                correlationId || idempotency_key,
-                channels
-            );
-            log.info({ eventCount: channels.length }, 'Outbox events created');
-        } catch (err) {
-            log.warn({ err }, 'Failed to create outbox events (will queue on next poll)');
-        }
-    }
-
-    // DEPRECATED: Trigger email and calendar side effects (non-blocking)
-    // TODO: Remove after outbox worker is stable
-    if (restaurant) {
-        triggerBookingSideEffects(restaurant, booking, guest_name, guest_email, guest_phone, covers, date, time, guest_language, log);
-    }
-
-    return booking;
+    // Contract: side-effects are async. Return immediately with status 'pending'.
+    // Email/calendar are processed by the outbox worker — never block here,
+    // never 500 because a side-effect failed after the booking committed.
+    return { id: row.booking_id, side_effects_status: row.side_effects_status };
 }
 
-// ─── Side Effects (email, calendar) ────────────────────────────────────────────
-
-function triggerBookingSideEffects(
-    restaurant: RestaurantEmailData,
-    booking: any,
-    guestName: string,
-    guestEmail: string | null | undefined,
-    guestPhone: string | null | undefined,
-    partySize: number,
-    date: string,
-    time: string,
-    language: string,
-    log: any
-) {
-    setImmediate(async () => {
-        if (guestEmail) {
-            try {
-                await emailService.sendBookingConfirmation({
-                    to: guestEmail,
-                    restaurantName: restaurant.name,
-                    restaurantAddress: restaurant.address || '',
-                    restaurantPhone: restaurant.phone || '',
-                    guestName,
-                    date,
-                    time,
-                    partySize,
-                    confirmationNumber: booking.id,
-                    language: language as 'fr' | 'en'
-                });
-            } catch (e) {
-                log.warn({ err: e }, 'Confirmation email failed');
-            }
-        }
-
-        if (restaurant.google_calendar_tokens) {
-            try {
-                const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                const start = new Date(`${date}T${time}`);
-                const end = new Date(start.getTime() + 2 * 3600000);
-                await calendarService.createEvent(tokens, {
-                    summary: `${guestName} (${partySize} pers.)`,
-                    description: `Tel: ${guestPhone} | Email: ${guestEmail}`,
-                    start,
-                    end,
-                    attendees: guestEmail ? [guestEmail] : []
-                });
-            } catch (e) {
-                log.warn({ err: e }, 'Calendar event failed');
-            }
-        }
-    });
-}
+// NOTE: Synchronous side-effects (triggerBookingSideEffects) were REMOVED.
+// Email + calendar are now handled asynchronously by the outbox worker
+// (src/workers/outbox-worker.ts), driven by outbox_events created atomically
+// inside create_booking_with_outbox(). This guarantees a booking is never
+// lost because a side-effect failed, and side-effects are retried + leased.
 
 // ─── Create (VAPI path - legacy wrapper) ──────────────────────────────────────
 // Kept for backward compatibility, delegates to unified createBooking

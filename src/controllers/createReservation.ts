@@ -260,7 +260,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
             logger.info(
                 {
                     action: 'booking_created',
-                    restaurant_id: newBooking.restaurant_id,
+                    restaurant_id,
                     booking_id: newBooking.id,
                     source: 'phone',
                     covers: coversInt
