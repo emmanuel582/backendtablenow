@@ -203,6 +203,7 @@ class BookingOrchestrationService {
           name: restaurant.name,
           address: restaurant.address,
           phone: restaurant.phone,
+          google_calendar_tokens: restaurant.google_calendar_tokens,
         }
       );
 

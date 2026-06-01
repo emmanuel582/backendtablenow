@@ -23,19 +23,23 @@ class ReliabilityLoggingService {
 
     const level = event.event_type === 'gate_passed' ? 'debug' : 'warn';
 
-    const logFn = level === 'debug' ? logger.debug : logger.warn;
+    // IMPORTANT : garder le binding sur `logger` (pino). Extraire `logger.warn`
+    // dans une variable puis l'appeler perd `this` -> crash "Symbol(pino.msgPrefix)".
+    const fields = {
+      action: 'reliability_gate',
+      call_id: event.call_id,
+      restaurant_id: event.restaurant_id,
+      gate: event.gate,
+      event_type: event.event_type,
+      payload: event.payload,
+    };
+    const msg = `voice.reliability.${event.gate}.${event.event_type}`;
 
-    logFn(
-      {
-        action: 'reliability_gate',
-        call_id: event.call_id,
-        restaurant_id: event.restaurant_id,
-        gate: event.gate,
-        event_type: event.event_type,
-        payload: event.payload,
-      },
-      `voice.reliability.${event.gate}.${event.event_type}`
-    );
+    if (level === 'debug') {
+      logger.debug(fields, msg);
+    } else {
+      logger.warn(fields, msg);
+    }
   }
 
   intentClassificationPassed(input: {

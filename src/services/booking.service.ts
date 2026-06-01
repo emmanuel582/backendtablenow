@@ -7,6 +7,16 @@ import bookingLogging from './bookingLogging.service';
 import errorTracking from './errorTracking.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
 
+// Ajoute des minutes à une heure LOCALE (date 'YYYY-MM-DD' + 'HH:MM') et renvoie
+// une chaîne ISO locale naïve 'YYYY-MM-DDTHH:MM:00'. On opère en UTC sur les
+// composantes (sans conversion de fuseau) pour gérer proprement le passage de jour.
+function addMinutesToLocalISO(date: string, time: string, mins: number): string {
+    const d = new Date(`${date}T${time}:00Z`);
+    d.setUTCMinutes(d.getUTCMinutes() + mins);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`;
+}
+
 // ─── Normalize ────────────────────────────────────────────────────────────────
 // Single function to normalize any booking row to a consistent shape
 
@@ -165,7 +175,10 @@ export async function createBooking(
         }
     }
 
-    const bookedFor = `${date}T${time}:00`;
+    // booked_for = instant correct interprété en heure locale restaurant (Europe/Paris),
+    // converti par Postgres (DST-safe). Indispensable pour que get_available_slots
+    // (qui calcule les créneaux en Europe/Paris) compte les chevauchements au bon moment.
+    const bookedFor = `${date} ${time}:00 Europe/Paris`;
 
     // Upsert customer (if phone provided) — shared logic
     const customerId = await upsertCustomer(restaurant_id, guest_name, guest_phone!, guest_email);
@@ -262,15 +275,21 @@ function triggerBookingSideEffects(
         if (restaurant.google_calendar_tokens) {
             try {
                 const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                const start = new Date(`${date}T${time}`);
-                const end = new Date(start.getTime() + 2 * 3600000);
-                await calendarService.createEvent(tokens, {
+                // Heures LOCALES naïves (Europe/Paris géré par Google via timeZone).
+                const startLocal = `${date}T${time.length === 5 ? time : time.slice(0, 5)}:00`;
+                const endLocal = addMinutesToLocalISO(date, time.slice(0, 5), 120);
+                const ev = await calendarService.createEvent(tokens, {
                     summary: `${guestName} (${partySize} pers.)`,
                     description: `Tel: ${guestPhone} | Email: ${guestEmail}`,
-                    start,
-                    end,
+                    start: startLocal,
+                    end: endLocal,
                     attendees: guestEmail ? [guestEmail] : []
                 });
+                const eventId = ev?.id || ev?.data?.id || null;
+                if (eventId) {
+                    await supabase.from('bookings').update({ calendar_event_id: eventId }).eq('id', booking.id);
+                    log.info({ bookingId: booking.id, eventId }, 'Google Calendar event created');
+                }
             } catch (e) {
                 log.warn({ err: e }, 'Calendar event failed');
             }

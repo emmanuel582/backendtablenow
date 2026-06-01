@@ -40,19 +40,15 @@ export const VapiCallDataSchema = z.object({
     tool_calls: z.array(VapiToolCallSchema).optional()
 });
 
+// Schéma permissif : VAPI envoie des payloads variés ({ message: { type: 'end-of-call-report'|'status-update'|'tool-calls'|... } })
+// avec de nombreux champs. Le handler /webhook extrait défensivement ce dont il a besoin
+// (req.body.message || req.body). On valide juste que c'est un objet et on laisse passer le reste.
 export const VapiWebhookPayloadSchema = z.object({
-    event: z.enum(['call-started', 'call-ended', 'booking-requested', 'message-sent']),
-    call: VapiCallDataSchema.optional(),
-    message: z.object({
-        id: z.string(),
-        call_id: z.string(),
-        type: z.enum(['sms', 'whatsapp']),
-        from: z.string().optional(),
-        to: z.string().optional(),
-        content: z.string(),
-        timestamp: z.string().optional()
-    }).optional()
-}).strict(); // Reject unknown fields
+    message: z.unknown().optional(),
+    call: z.unknown().optional(),
+    type: z.string().optional(),
+    event: z.string().optional(),
+}).passthrough();
 
 export type VapiWebhookPayload = z.infer<typeof VapiWebhookPayloadSchema>;
 export type VapiToolCall = z.infer<typeof VapiToolCallSchema>;

@@ -15,10 +15,62 @@ export class VapiService {
         return `${process.env.BACKEND_URL}/api/vapi/webhook`;
     }
 
-    private buildAssistantPayload(restaurantData: any): object {
+    // Prompt INLINÉ par restaurant (aucun {{placeholder}} : fiabilité totale, car
+    // l'injection de variables par appel n'est pas garantie pour un assistant statique).
+    // La logique de date/heure est DÉPORTÉE côté serveur (les outils résolvent le langage naturel).
+    public buildSystemPrompt(r: any): string {
+        const name = r?.name || 'le restaurant';
+        const address = r?.address || '';
+        const phone = r?.phone || '';
+        const hours = this.formatOpeningHours(r?.opening_hours);
+        const rid = r?.id || '';
+        return `Tu es l'hôte/hôtesse IA de ${name}, propulsé par TableNow. Ton UNIQUE rôle : prendre des réservations de table par téléphone.
+
+RESTAURANT
+- Nom : ${name}
+- Adresse : ${address}
+- Téléphone (humain) : ${phone}
+- Horaires : ${hours}
+- restaurant_id : ${rid}  (transmets TOUJOURS cette valeur exacte aux outils)
+
+LANGUE
+- Verrouille la langue dès les premiers mots de l'appelant (français par défaut). Ne redemande jamais la langue.
+
+DATE DU JOUR (Europe/Paris) : {{"now" | date: "%A %d %B %Y", "Europe/Paris"}} — heure : {{"now" | date: "%H:%M", "Europe/Paris"}}
+
+CE QU'IL FAUT COLLECTER (bref, naturel, max 2 phrases par tour)
+1) nombre de couverts
+2) la date souhaitée
+3) l'heure souhaitée
+4) prénom et nom
+5) numéro de rappel
+
+DATES & HEURES
+- En te basant sur la DATE DU JOUR ci-dessus, calcule la date demandée par l'appelant ("demain", "vendredi prochain", "le 25", "ce soir"…) et transmets-la aux outils au format AAAA-MM-JJ. L'heure au format 24h HH:MM.
+- Confirme TOUJOURS la date complète à l'appelant avant de vérifier la disponibilité (ex : "vendredi 5 juin à 20h").
+- Date ambiguë ("5/4") → demande de préciser le jour et le mois.
+- Ne prononce jamais l'année à voix haute.
+
+OUTILS
+1) check_availability(restaurant_id, date AAAA-MM-JJ, time HH:MM, covers) — toujours avant d'annoncer qu'un créneau est libre.
+2) create_booking(restaurant_id, date, time, covers, first_name, last_name, phone, language) — UNIQUEMENT après confirmation explicite du récapitulatif. language = "fr" ou "en".
+
+DÉROULÉ
+- Dès que tu as couverts + date + heure : appelle check_availability.
+- Si disponible, récapitule : "[N] couverts, [jour date] à [heure], au nom de [prénom nom], rappel au [téléphone] — c'est bien ça ?"
+- Sur un "oui" explicite, appelle create_booking puis relis la confirmation renvoyée par l'outil.
+- Si indisponible, propose les créneaux alternatifs renvoyés par l'outil.
+
+STYLE
+- Téléphone : chaleureux, naturel, 2 phrases max. Reformule ce que tu as compris.
+- Modification/annulation ou hors-sujet (menu, prix…) → "Pour cela, appelez directement le restaurant au ${phone}."`;
+    }
+
+    private buildAssistantPayload(restaurantData: any, toolIds: string[] = []): object {
         const serverUrl = this.getServerUrl();
+        const name = restaurantData?.name || 'le restaurant';
         return {
-            name: `${restaurantData.name} — TableNow`,
+            name: `${name} — TableNow`,
             transcriber: {
                 provider: 'deepgram',
                 model: 'nova-2',
@@ -29,18 +81,28 @@ export class VapiService {
                 provider: 'openai',
                 model: 'gpt-4o',
                 temperature: 0.3,
-                maxTokens: 120,
-                systemPrompt: this.generateSystemPrompt(),
-                tools: this.generateTools()
+                maxTokens: 150,
+                messages: [
+                    { role: 'system', content: this.buildSystemPrompt(restaurantData) }
+                ],
+                // Outils référencés par ID (entités Tool) : c'est ce que le dashboard
+                // Vapi reconnaît comme « sélectionnés ». Les définitions inline (model.tools)
+                // ne sont PAS prises en compte par le dashboard.
+                toolIds
             },
             voice: {
                 provider: 'openai',
                 voiceId: 'shimmer',
                 model: 'gpt-4o-mini-tts'
             },
-            firstMessage: 'Bonjour et bienvenue, comment puis-je vous aider ?',
+            firstMessage: `Bonjour et bienvenue chez ${name}, comment puis-je vous aider ?`,
             endCallMessage: 'Bonne journée, au revoir !',
-            serverUrl,
+            // server.secret -> VAPI envoie le header X-Vapi-Secret sur les webhooks,
+            // vérifié par /api/vapi/webhook (authentification simple par jeton partagé).
+            server: {
+                url: serverUrl,
+                secret: process.env.VAPI_WEBHOOK_SECRET,
+            },
             silenceTimeoutSeconds: 12,
             maxDurationSeconds: 600,
             backgroundDenoisingEnabled: true,
@@ -113,14 +175,14 @@ STYLE:
                 type: 'function',
                 function: {
                     name: 'check_availability',
-                    description: 'Check table availability. Must call before announcing any slot is free.',
+                    description: 'Vérifie la disponibilité d\'une table. À appeler avant d\'annoncer qu\'un créneau est libre. Le serveur résout lui-même la date/heure.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            restaurant_id: { type: 'string', description: 'Restaurant UUID' },
-                            date:          { type: 'string', description: 'YYYY-MM-DD' },
-                            time:          { type: 'string', description: 'HH:MM (24h)' },
-                            covers:        { type: 'integer', description: 'Number of guests' }
+                            restaurant_id: { type: 'string', description: 'restaurant_id fourni dans le prompt (transmettre tel quel)' },
+                            date:          { type: 'string', description: 'Date AAAA-MM-JJ, calculée à partir de la DATE DU JOUR fournie dans le prompt' },
+                            time:          { type: 'string', description: 'Heure HH:MM (24h)' },
+                            covers:        { type: 'integer', description: 'Nombre de couverts' }
                         },
                         required: ['restaurant_id', 'date', 'time', 'covers']
                     }
@@ -131,18 +193,18 @@ STYLE:
                 type: 'function',
                 function: {
                     name: 'create_booking',
-                    description: 'Create confirmed reservation. Only call after explicit caller confirmation of full recap.',
+                    description: 'Crée la réservation confirmée. À appeler UNIQUEMENT après confirmation explicite du récapitulatif. Le serveur résout lui-même la date/heure.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            restaurant_id: { type: 'string', description: 'Restaurant UUID' },
-                            date:          { type: 'string', description: 'YYYY-MM-DD' },
-                            time:          { type: 'string', description: 'HH:MM (24h)' },
-                            covers:        { type: 'integer', description: 'Number of guests' },
-                            first_name:    { type: 'string', description: 'First name' },
-                            last_name:     { type: 'string', description: 'Last name' },
-                            phone:         { type: 'string', description: 'Caller phone number' },
-                            language:      { type: 'string', enum: ['fr', 'en'], description: 'Locked language of the call: "fr" or "en"' }
+                            restaurant_id: { type: 'string', description: 'restaurant_id fourni dans le prompt (transmettre tel quel)' },
+                            date:          { type: 'string', description: 'Date AAAA-MM-JJ, calculée à partir de la DATE DU JOUR fournie dans le prompt' },
+                            time:          { type: 'string', description: 'Heure HH:MM (24h)' },
+                            covers:        { type: 'integer', description: 'Nombre de couverts' },
+                            first_name:    { type: 'string', description: 'Prénom' },
+                            last_name:     { type: 'string', description: 'Nom' },
+                            phone:         { type: 'string', description: 'Numéro de rappel de l\'appelant' },
+                            language:      { type: 'string', enum: ['fr', 'en'], description: 'Langue verrouillée de l\'appel : "fr" ou "en"' }
                         },
                         required: ['restaurant_id', 'date', 'time', 'covers', 'first_name', 'last_name', 'phone', 'language']
                     }
@@ -152,12 +214,53 @@ STYLE:
         ];
     }
 
+    /**
+     * Garantit l'existence des entités Tool Vapi (check_availability, create_booking)
+     * pointant vers le BON backend, et renvoie leurs IDs. Les outils sont identiques
+     * pour tous les restaurants (restaurant_id transmis en paramètre) → partagés.
+     * Crée s'ils manquent, met à jour (URL/schéma) s'ils existent.
+     */
+    async ensureToolIds(): Promise<string[]> {
+        const defs = this.generateTools(); // [{ type:'function', function, server }, ...]
+        let existing: any[] = [];
+        try {
+            const r = await axios.get(`${VAPI_BASE_URL}/tool`, { headers: this.headers });
+            existing = Array.isArray(r.data) ? r.data : [];
+        } catch (e: any) {
+            console.warn('Could not list VAPI tools:', e.response?.data || e.message);
+        }
+
+        const ids: string[] = [];
+        for (const def of defs) {
+            const name = (def as any).function?.name;
+            const match = existing.find((t: any) => t?.function?.name === name);
+            try {
+                if (match) {
+                    await axios.patch(
+                        `${VAPI_BASE_URL}/tool/${match.id}`,
+                        { function: (def as any).function, server: (def as any).server },
+                        { headers: this.headers }
+                    );
+                    ids.push(match.id);
+                } else {
+                    const created = await axios.post(`${VAPI_BASE_URL}/tool`, def, { headers: this.headers });
+                    ids.push(created.data.id);
+                }
+            } catch (e: any) {
+                console.error(`Tool ensure failed for ${name}:`, e.response?.data || e.message);
+                throw e;
+            }
+        }
+        return ids;
+    }
+
     async createAssistant(restaurantData: any): Promise<any> {
         try {
             console.log(`🚀 Creating VAPI Assistant for ${restaurantData.name}...`);
+            const toolIds = await this.ensureToolIds();
             const response = await axios.post(
                 `${VAPI_BASE_URL}/assistant`,
-                this.buildAssistantPayload(restaurantData),
+                this.buildAssistantPayload(restaurantData, toolIds),
                 { headers: this.headers }
             );
             console.log(`✅ Assistant created: ${response.data.id}`);
@@ -171,9 +274,10 @@ STYLE:
     async updateAssistant(assistantId: string, restaurantData: any): Promise<any> {
         try {
             console.log(`🔄 Updating VAPI Assistant ${assistantId}...`);
+            const toolIds = await this.ensureToolIds();
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/assistant/${assistantId}`,
-                this.buildAssistantPayload(restaurantData),
+                this.buildAssistantPayload(restaurantData, toolIds),
                 { headers: this.headers }
             );
             console.log(`✅ Assistant ${assistantId} updated`);
@@ -302,15 +406,37 @@ STYLE:
     }
 
     public formatOpeningHours(openingHours: any): string {
-        if (!openingHours || typeof openingHours !== 'object') return '';
-        const map: Record<string, string> = {
-            monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi',
-            thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi', sunday: 'dimanche'
-        };
-        return Object.entries(map).map(([key, label]) => {
-            const h = openingHours[key];
-            return h?.open ? `${label}: ${h.from}–${h.to}` : `${label}: fermé`;
-        }).join(', ');
+        if (!openingHours) return '';
+        const labels = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'];
+
+        // Format réel de l'UI (HoraireSettings) : tableau de 7 jours, index 0=lundi…6=dimanche,
+        // chaque jour = { enabled, services: [{ name, start, end, covers }] }.
+        if (Array.isArray(openingHours)) {
+            return openingHours.map((day: any, i: number) => {
+                const label = labels[i] || `jour ${i + 1}`;
+                if (day?.enabled && Array.isArray(day.services) && day.services.length) {
+                    const svc = day.services
+                        .filter((s: any) => s?.start && s?.end)
+                        .map((s: any) => `${s.start}-${s.end}`)
+                        .join(' et ');
+                    return svc ? `${label}: ${svc}` : `${label}: fermé`;
+                }
+                return `${label}: fermé`;
+            }).join(', ');
+        }
+
+        // Repli : ancien format objet { monday: { open, from, to }, ... }
+        if (typeof openingHours === 'object') {
+            const map: Record<string, string> = {
+                monday: 'lundi', tuesday: 'mardi', wednesday: 'mercredi',
+                thursday: 'jeudi', friday: 'vendredi', saturday: 'samedi', sunday: 'dimanche'
+            };
+            return Object.entries(map).map(([key, label]) => {
+                const h = (openingHours as any)[key];
+                return h?.open ? `${label}: ${h.from}–${h.to}` : `${label}: fermé`;
+            }).join(', ');
+        }
+        return '';
     }
 }
 

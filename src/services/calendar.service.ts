@@ -33,20 +33,25 @@ export class CalendarService {
     async createEvent(tokens: any, eventData: {
         summary: string;
         description?: string;
-        start: Date;
-        end: Date;
+        start: Date | string;
+        end: Date | string;
         attendees?: string[];
     }): Promise<any> {
         const client = this.createClient(tokens);
         const calendar = google.calendar({ version: 'v3', auth: client });
+
+        // Si on reçoit une chaîne, c'est une heure LOCALE naïve (ex "2026-06-05T20:00:00")
+        // → on la passe telle quelle avec timeZone : Google la place dans le bon fuseau
+        // (DST-safe). Convertir en UTC (toISOString) décalerait l'event de l'offset Paris.
+        const fmt = (v: Date | string) => (typeof v === 'string' ? v : v.toISOString());
 
         const response = await calendar.events.insert({
             calendarId: 'primary',
             requestBody: {
                 summary: eventData.summary,
                 description: eventData.description,
-                start: { dateTime: eventData.start.toISOString(), timeZone: TZ },
-                end:   { dateTime: eventData.end.toISOString(),   timeZone: TZ },
+                start: { dateTime: fmt(eventData.start), timeZone: TZ },
+                end:   { dateTime: fmt(eventData.end),   timeZone: TZ },
                 attendees: eventData.attendees?.map(email => ({ email })),
                 reminders: {
                     useDefault: false,

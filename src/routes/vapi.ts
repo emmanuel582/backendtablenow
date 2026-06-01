@@ -17,50 +17,23 @@ import type { VoiceSessionState, ResolvedVoiceRestaurant } from '../types/voice.
 const router = Router();
 
 /**
- * Verify VAPI webhook signature using HMAC-SHA256
- * Prevents attackers from faking booking events
- * SECURITY: KEEP PUBLIC CONTRACT - signature required
+ * Vérifie l'authenticité d'un webhook VAPI via le jeton partagé X-Vapi-Secret.
+ * VAPI envoie ce header lorsque l'assistant est configuré avec server.secret
+ * (cf. vapi.service.ts → buildAssistantPayload). Comparaison à temps constant.
  */
-function verifyVapiSignature(req: Request, secret: string): boolean {
-    const signature = req.headers['x-vapi-signature'] as string;
-
-    if (!signature) {
-        logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI webhook missing signature header');
+function verifyVapiSecret(req: Request, secret: string): boolean {
+    const provided = (req.headers['x-vapi-secret'] as string) || '';
+    if (!provided) {
+        logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI webhook missing X-Vapi-Secret header');
         return false;
     }
-
     try {
-        // Reconstruct the signed payload (body + timestamp)
-        const timestamp = req.headers['x-vapi-timestamp'] as string;
-        const nonce = req.headers['x-vapi-nonce'] as string;
-
-        if (!timestamp || !nonce) {
-            logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI webhook missing timestamp or nonce');
-            return false;
-        }
-
-        // Build the signed content: timestamp.nonce.body
-        const body = JSON.stringify(req.body);
-        const signedContent = `${timestamp}.${nonce}.${body}`;
-
-        // Calculate expected signature using timing-safe comparison
-        const expectedSignature = crypto
-            .createHmac('sha256', secret)
-            .update(signedContent)
-            .digest('hex');
-
-        // Use timingSafeEqual to prevent timing attacks
-        const signatureBuffer = Buffer.from(signature, 'hex');
-        const expectedBuffer = Buffer.from(expectedSignature, 'hex');
-
-        if (signatureBuffer.length !== expectedBuffer.length) {
-            logger.warn({ action: 'vapi_webhook_verify' }, 'VAPI signature length mismatch');
-            return false;
-        }
-
-        return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
+        const a = Buffer.from(provided, 'utf8');
+        const b = Buffer.from(secret, 'utf8');
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(a, b);
     } catch (err: any) {
-        logger.error({ action: 'vapi_webhook_verify', error: err.message }, 'VAPI signature verification error');
+        logger.error({ action: 'vapi_webhook_verify', error: err.message }, 'VAPI secret verification error');
         return false;
     }
 }
@@ -95,9 +68,9 @@ router.post('/webhook', validate(VapiWebhookPayloadSchema), async (req: Request,
             return res.status(500).json({ error: 'Server misconfiguration' });
         }
 
-        if (!verifyVapiSignature(req, secret)) {
-            logger.warn({ action: 'vapi_webhook' }, 'VAPI webhook signature verification failed - rejecting request');
-            return res.status(401).json({ error: 'Unauthorized: Invalid signature' });
+        if (!verifyVapiSecret(req, secret)) {
+            logger.warn({ action: 'vapi_webhook' }, 'VAPI webhook secret verification failed - rejecting request');
+            return res.status(401).json({ error: 'Unauthorized: Invalid secret' });
         }
 
         const event = req.body.message || req.body;
@@ -394,6 +367,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         phone: restaurant.phone || '',
         opening_hours: restaurant.opening_hours,
         language,
+        google_calendar_tokens: restaurant.google_calendar_tokens,
     };
 
     try {

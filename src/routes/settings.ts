@@ -3,6 +3,7 @@ import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import vapiService from '../services/vapi.service';
 import provisioningService from '../services/provisioning.service';
+import { syncAvailabilityRules } from '../services/availability.service';
 import logger from '../lib/logger';
 
 const router = Router();
@@ -49,6 +50,16 @@ router.put('/', async (req: AuthRequest, res: Response) => {
         if (error) {
             logger.error({ error }, 'Settings update DB error');
             return res.status(500).json({ error: 'Failed to update settings' });
+        }
+
+        // Pont horaires -> moteur de créneaux : si les horaires changent, on régénère
+        // availability_rules (sinon l'IA ne voit jamais de disponibilité).
+        if ('opening_hours' in updates) {
+            try {
+                await syncAvailabilityRules(restaurantId);
+            } catch (syncErr: any) {
+                logger.error({ err: syncErr?.message, restaurantId }, 'Availability sync failed after settings update');
+            }
         }
 
         if (restaurant.vapi_assistant_id) {

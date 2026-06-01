@@ -128,6 +128,7 @@ export interface ResolvedVoiceRestaurant {
   phone: string;
   opening_hours: unknown;
   language: 'fr' | 'en';
+  google_calendar_tokens?: string | null;
 }
 
 export interface VoiceAssistantContext {
