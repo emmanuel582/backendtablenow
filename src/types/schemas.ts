@@ -28,8 +28,8 @@ export const CreateBookingSchema = z.object({
 
 export const ManualCreateBookingSchema = z.object({
     guestName:       z.string().min(1).max(200).trim(),
-    guestEmail:      z.string().email(),
-    guestPhone:      PhoneSchema.optional(),
+    guestPhone:      PhoneSchema,                       // Contact requis (walk-in / téléphone) — standard du secteur
+    guestEmail:      z.string().email().optional(),     // Email optionnel : pas toujours fourni au comptoir
     date:            DateSchema,
     time:            TimeSchema,
     partySize:       z.number().int().min(1).max(50),

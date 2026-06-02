@@ -889,42 +889,72 @@ async function createBookingTool(restaurantId: string, restaurant: any, params: 
 }
 
 async function updateBooking(restaurantId: string, restaurant: any, params: any) {
-    const { confirmationNumber, ...updates } = params;
-    if (updates.time) updates.time = normalizeTime(updates.time);
+    const { confirmationNumber, id } = params;
 
-    let { data: booking, error } = await supabase
+    // Locate the existing booking first (restaurant-scoped, with a
+    // confirmation-only fallback) so we can merge date/time and keep the legacy
+    // booked_for column consistent with the canonical booking_date/booking_time.
+    let { data: existing } = await supabase
         .from('bookings')
-        .update(updates)
+        .select('*')
         .eq('restaurant_id', restaurantId)
         .eq('confirmation_number', confirmationNumber)
-        .select()
         .single();
 
-    if ((error || !booking) && !updates.id) {
+    if (!existing && !id) {
         const fallback = await supabase
             .from('bookings')
-            .update(updates)
+            .select('*')
             .eq('confirmation_number', confirmationNumber)
-            .select()
             .single();
-        booking = fallback.data as any;
-        error = fallback.error as any;
+        existing = fallback.data as any;
     }
 
-    if (error || !booking) {
+    if (!existing) {
         return { success: false, message: 'Réservation non trouvée.' };
     }
 
-    if (restaurant.google_calendar_tokens && booking.calendar_event_id && (updates.date || updates.time)) {
+    // Map VAPI tool params (date/time/partySize/guestName) onto the real DB
+    // columns (booking_date/booking_time/party_size/guest_name). Previously the
+    // raw params were spread into .update(), writing to non-existent columns and
+    // silently breaking every phone reschedule.
+    const newDate = params.date || existing.booking_date;
+    const newTime = params.time ? (normalizeTime(params.time) || params.time) : existing.booking_time;
+
+    const dbUpdates: Record<string, any> = {};
+    if (params.date) dbUpdates.booking_date = params.date;
+    if (params.time) dbUpdates.booking_time = newTime;
+    if (params.date || params.time) dbUpdates.booked_for = `${newDate}T${newTime}:00`; // keep legacy field in sync
+    if (params.partySize != null) { dbUpdates.party_size = params.partySize; dbUpdates.covers = params.partySize; }
+    if (params.guestName) dbUpdates.guest_name = params.guestName;
+    if (params.guestPhone) dbUpdates.guest_phone = params.guestPhone;
+    if (params.guestEmail) dbUpdates.guest_email = params.guestEmail;
+    if (params.specialRequests) dbUpdates.special_requests = params.specialRequests;
+
+    if (Object.keys(dbUpdates).length === 0) {
+        return { success: true, message: 'Aucune modification demandée.' };
+    }
+
+    const { data: booking, error } = await supabase
+        .from('bookings')
+        .update(dbUpdates)
+        .eq('id', existing.id)
+        .select()
+        .single();
+
+    if (error || !booking) {
+        logger.error({ err: error, bookingId: existing.id }, 'Booking update failed');
+        return { success: false, message: 'Réservation non trouvée.' };
+    }
+
+    if (restaurant.google_calendar_tokens && booking.calendar_event_id && (params.date || params.time)) {
         try {
             const tokens = JSON.parse(restaurant.google_calendar_tokens);
-            const newDate = updates.date || booking.booking_date;
-            const newTime = updates.time || booking.booking_time;
             const startTime = new Date(`${newDate}T${newTime}:00`);
             const endTime = new Date(startTime.getTime() + 90 * 60000);
             await calendarService.updateEvent(tokens, booking.calendar_event_id, {
                 start: startTime, end: endTime,
-                summary: `Reservation: ${booking.guest_name} (${updates.partySize || booking.party_size} pers.)`
+                summary: `Reservation: ${booking.guest_name} (${booking.party_size} pers.)`
             });
         } catch (err) {
             logger.error({ err }, 'Google Calendar update error');

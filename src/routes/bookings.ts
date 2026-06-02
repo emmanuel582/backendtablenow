@@ -89,11 +89,21 @@ router.put('/:id', validate(UpdateBookingSchema), async (req: AuthRequest, res: 
         const { id } = req.params;
         const restaurantId = req.user!.restaurantId;
 
-        await getBookingById(id, restaurantId); // Ensures exists + belongs to restaurant
+        const existing = await getBookingById(id, restaurantId); // Ensures exists + belongs to restaurant
+
+        // Keep the denormalized columns consistent with the canonical ones so the
+        // dashboard (which reads booked_for first) never shows a stale slot.
+        const updates: Record<string, unknown> = { ...req.body };
+        if (req.body.booking_date || req.body.booking_time) {
+            const d = req.body.booking_date || existing.booking_date;
+            const t = req.body.booking_time || existing.booking_time;
+            updates.booked_for = `${d}T${t}:00`;
+        }
+        if (req.body.party_size != null) updates.covers = req.body.party_size;
 
         const { data: booking, error } = await supabase
             .from('bookings')
-            .update(req.body)
+            .update(updates)
             .eq('id', id)
             .eq('restaurant_id', restaurantId)
             .select()
