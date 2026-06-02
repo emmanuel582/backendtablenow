@@ -7,6 +7,7 @@ export type UserContext = {
     id: string;
     status: string;
     is_complete: boolean;
+    has_hours: boolean;
     slug: string;
   };
   subscription?: {
@@ -14,6 +15,7 @@ export type UserContext = {
   };
   calendar?: {
     status: string;
+    skipped: boolean;
   };
   provisioning?: {
     status: string;
@@ -28,41 +30,53 @@ export type UserContext = {
 };
 
 /**
- * Resolves the single canonical landing route for a user, given their context.
+ * Single source of truth for onboarding routing.
  *
- * Contract: this function returns ONLY real, terminal frontend routes —
- * `/settings`, `/billing`, or `/dashboard`. It never emits `/setup/*` paths
- * (those do not exist as pages and were the historical source of redirect
- * loops). The ordering mirrors the dashboard guard stack on the frontend
- * (Onboarding → Subscription → RestaurantComplete) so that `next_route` always
- * points at the first surface where a guard would otherwise send the user.
+ * Returns the canonical onboarding route the user must complete next, in strict
+ * business order, or '/dashboard' once everything is done. Every value returned
+ * here is a REAL frontend page that renders an actionable form/screen — there
+ * are no placeholder or "ghost" routes.
  *
- *   • Onboarding incomplete / no restaurant  → `/settings`  (setup happens here)
- *   • Subscription not active/trial          → `/billing`
- *   • Restaurant profile incomplete          → `/settings`
- *   • Everything satisfied                    → `/dashboard`
+ *   restaurant profile → hours → calendar → assistant → success → dashboard
  *
- * Assistant/calendar provisioning is intentionally NOT gated here: the
- * dashboard does not require an active assistant (only the /calls page does,
- * via AssistantGuard), so it must not influence the primary landing route.
+ * Completion is DERIVED from the real DB columns (see getUserContextWithNextRoute):
+ *   - restaurant : name + owner_name + address + phone present  (is_complete)
+ *   - hours      : opening_hours array is non-empty             (has_hours)
+ *   - calendar   : calendar_status === 'connected' OR explicitly skipped
+ *   - assistant  : assistant_status === 'active' (auto-provisioned by VAPI)
+ *   - success    : onboarding_status === 'complete' (persisted at /setup/success)
  */
 export function resolveNextRoute(ctx: UserContext): string | null {
+  // Not linked to a restaurant yet — profile is the entry step.
   if (!ctx.restaurant) {
-    return '/settings';
+    return '/setup/restaurant';
   }
 
-  if (ctx.onboarding?.status && ctx.onboarding.status !== 'complete') {
-    return '/settings';
-  }
-
-  const subscription = ctx.subscription?.status;
-  const subscriptionActive = subscription === 'active' || subscription === 'trial';
-  if (!subscriptionActive) {
-    return '/billing';
-  }
-
+  // 1. Restaurant profile
   if (!ctx.restaurant.is_complete) {
-    return '/settings';
+    return '/setup/restaurant';
+  }
+
+  // 2. Opening hours
+  if (!ctx.restaurant.has_hours) {
+    return '/setup/hours';
+  }
+
+  // 3. Calendar — connected or explicitly skipped is enough to proceed.
+  const calendarDecided = ctx.calendar?.status === 'connected' || ctx.calendar?.skipped === true;
+  if (!calendarDecided) {
+    return '/setup/calendar';
+  }
+
+  // 4. Voice assistant must be provisioned and active.
+  if (ctx.assistant?.status !== 'active') {
+    return '/setup/assistant';
+  }
+
+  // 5. All business steps satisfied. Until the user acknowledges the success
+  //    screen (which persists onboarding_status='complete'), send them there.
+  if (ctx.onboarding?.status !== 'complete') {
+    return '/setup/success';
   }
 
   return '/dashboard';
