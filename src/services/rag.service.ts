@@ -1,4 +1,5 @@
 import { Pinecone } from '@pinecone-database/pinecone';
+import logger from '../lib/logger';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import pdf from 'pdf-parse';
@@ -26,7 +27,7 @@ export class RAGService {
         try {
             this.index = pinecone.Index(this.indexName);
         } catch (error) {
-            console.error('Error initializing Pinecone:', error);
+            logger.error({ err: error }, 'Error initializing Pinecone');
             throw error;
         }
     }
@@ -49,7 +50,7 @@ export class RAGService {
                 throw new Error('Unsupported file type');
             }
         } catch (error: any) {
-            console.error('Error extracting text from document:', error);
+            logger.error({ err: error }, 'Error extracting text from document');
             throw error;
         }
     }
@@ -79,7 +80,7 @@ export class RAGService {
             const result = await embeddingModel.embedContent(text);
             return result.embedding.values;
         } catch (error: any) {
-            console.error('Error generating embedding:', error);
+            logger.error({ err: error }, 'Error generating embedding');
             throw error;
         }
     }
@@ -125,7 +126,7 @@ export class RAGService {
                 }
             }
         } catch (error: any) {
-            console.error('Error processing document:', error);
+            logger.error({ err: error }, 'Error processing document');
             throw error;
         }
     }
@@ -151,7 +152,7 @@ export class RAGService {
 
             return relevantChunks;
         } catch (error: any) {
-            console.error('Error querying documents:', error);
+            logger.error({ err: error }, 'Error querying documents');
             return [];
         }
     }
@@ -192,7 +193,7 @@ Answer:`;
             const response = await result.response;
             return response.text();
         } catch (error: any) {
-            console.error('Error generating answer:', error);
+            logger.error({ err: error }, 'Error generating answer');
             return 'I apologize, but I am having trouble accessing that information right now. Please contact the restaurant directly for assistance.';
         }
     }
@@ -205,9 +206,9 @@ Answer:`;
             await this.index.deleteMany({
                 filter: { restaurantId }
             });
-            console.log(`✅ Deleted all documents for restaurant ${restaurantId}`);
+            logger.info({ restaurantId }, 'Deleted all documents for restaurant');
         } catch (error: any) {
-            console.error('Error deleting restaurant documents:', error);
+            logger.error({ err: error }, 'Error deleting restaurant documents');
             throw error;
         }
     }
@@ -233,7 +234,7 @@ Answer:`;
             // Process and store new document
             await this.processAndStoreDocument(restaurantId, documentType, filePath, fileType);
         } catch (error: any) {
-            console.error('Error updating document:', error);
+            logger.error({ err: error }, 'Error updating document');
             throw error;
         }
     }
@@ -272,7 +273,7 @@ Answer:`;
                 indexStats: stats
             };
         } catch (error: any) {
-            console.error('Error getting document stats:', error);
+            logger.error({ err: error }, 'Error getting document stats');
             return null;
         }
     }

@@ -1,4 +1,5 @@
 import { Client } from '@hubspot/api-client';
+import logger from '../lib/logger';
 
 const hubspotApiKey = process.env.HUBSPOT_API_KEY;
 if (!hubspotApiKey) {
@@ -62,7 +63,7 @@ export class HubSpotService {
                 throw error;
             }
         } catch (error: any) {
-            console.error('Error upserting HubSpot contact:', error.message);
+            logger.error({ err: error }, 'Error upserting HubSpot contact');
             throw error;
         }
     }
@@ -104,7 +105,7 @@ export class HubSpotService {
 
             return response;
         } catch (error: any) {
-            console.error('Error creating HubSpot deal:', error.message);
+            logger.error({ err: error }, 'Error creating HubSpot deal');
             throw error;
         }
     }
@@ -128,7 +129,7 @@ export class HubSpotService {
 
             return response;
         } catch (error: any) {
-            console.error('Error updating HubSpot deal:', error.message);
+            logger.error({ err: error }, 'Error updating HubSpot deal');
             throw error;
         }
     }
@@ -175,7 +176,7 @@ export class HubSpotService {
 
             return response;
         } catch (error: any) {
-            console.error('Error logging HubSpot activity:', error.message);
+            logger.error({ err: error }, 'Error logging HubSpot activity');
             throw error;
         }
     }

@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import logger from '../lib/logger';
 import Stripe from 'stripe';
 import supabase from '../config/supabase';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
@@ -62,7 +63,7 @@ router.post('/create-checkout-session', authenticateToken, async (req: AuthReque
 
         res.json({ url: session.url });
     } catch (err: any) {
-        console.error('Stripe checkout error:', err);
+        logger.error({ err }, 'Stripe checkout error');
         res.status(500).json({ error: err.message });
     }
 });
@@ -121,7 +122,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
             }
         }
     } catch (err) {
-        console.error('Webhook processing error:', err);
+        logger.error({ err }, 'Stripe webhook processing error');
     }
 
     res.json({ received: true });

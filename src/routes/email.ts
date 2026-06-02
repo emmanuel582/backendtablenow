@@ -24,18 +24,18 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
         const emailBody = plain || html || req.body.text || req.body.html || '';
         const raw = req.body.raw || emailBody;
 
-        console.log('BCC Email received:', { to, from, subject });
+        logger.info({ subject }, 'BCC email received');
 
         // Extract restaurant ID from BCC email
         // Format: bcc+r-{restaurant_id}@tablenow.io
         const match = to.match(/r-([a-f0-9-]+)@/);
         if (!match) {
-            console.error('Invalid BCC email format:', to);
+            logger.error('Invalid BCC email format');
             return res.status(400).json({ error: 'Invalid BCC email format' });
         }
 
         const restaurantId = match[1];
-        console.log('Processing BCC email for restaurant:', restaurantId);
+        logger.info({ restaurantId }, 'Processing BCC email for restaurant');
 
         // Parse email content
         const parsedData = await emailService.parseBCCEmail(raw || emailBody);
@@ -71,7 +71,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
             try {
                 await hubspotService.updateDealStatus(dealId, stage);
             } catch (err) {
-                console.error('HubSpot stage sync error for BCC:', err);
+                logger.error({ err }, 'HubSpot stage sync error for BCC');
             }
         };
 
@@ -121,7 +121,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                         .eq('id', booking.id);
                 }
             } catch (err) {
-                console.error('HubSpot sync error for BCC:', err);
+                logger.error({ err }, 'HubSpot sync error for BCC');
             }
 
             // 2. Google Calendar Sync
@@ -137,9 +137,9 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                         end: endTime,
                         attendees: parsedData.email ? [parsedData.email] : []
                     });
-                    console.log('✅ Google Calendar event created from BCC');
+                    logger.info('Google Calendar event created from BCC');
                 } catch (calError) {
-                    console.error('Calendar sync error for BCC:', calError);
+                    logger.error({ err: calError }, 'Calendar sync error for BCC');
                 }
             }
         }
@@ -184,7 +184,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                             summary: `Reservation: ${booking.guest_name} (${updates.party_size} ppl)`
                         });
                     } catch (calError) {
-                        console.error('Calendar update error for BCC:', calError);
+                        logger.error({ err: calError }, 'Calendar update error for BCC');
                     }
                 }
 
@@ -219,7 +219,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                     try {
                         await calendarService.deleteEvent(JSON.parse(restaurant.google_calendar_tokens), booking.calendar_event_id);
                     } catch (calError) {
-                        console.error('Calendar delete error for BCC:', calError);
+                        logger.error({ err: calError }, 'Calendar delete error for BCC');
                     }
                 }
 
@@ -229,7 +229,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
 
         res.json({ received: true, parsed: parsedData });
     } catch (error: any) {
-        console.error('BCC email processing error:', error);
+        logger.error({ err: error }, 'BCC email processing error');
         res.status(500).json({ error: 'Failed to process email' });
     }
 });
@@ -255,7 +255,7 @@ router.get('/bcc', authenticateToken, async (req: AuthRequest, res: Response) =>
 
         res.json({ emails, total: count, limit: Number(limit), offset: Number(offset) });
     } catch (error: any) {
-        console.error('Get BCC emails error:', error);
+        logger.error({ err: error }, 'Get BCC emails error');
         res.status(500).json({ error: 'Failed to fetch emails' });
     }
 });
