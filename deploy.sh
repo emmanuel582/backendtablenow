@@ -16,5 +16,5 @@ for var in SUPABASE_ANON_KEY INTERNAL_SECRET BACKEND_URL JWT_SECRET VAPI_API_KEY
 done
 echo "✅ Variables OK"
 
-pm2 restart tablenow-backend || pm2 start dist/server.js --name tablenow-backend
-pm2 logs tablenow-backend --lines 30 --nostream
+pm2 restart tablenow-api || pm2 start dist/server.js --name tablenow-api
+pm2 logs tablenow-api --lines 30 --nostream

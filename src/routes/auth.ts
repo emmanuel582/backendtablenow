@@ -11,7 +11,6 @@ import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
 import { generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
-import { resolveNextRoute, type UserContext } from '../lib/routing';
 import { validate } from '../middleware/handlers';
 import { AuthGoogleSchema } from '../schemas/authGoogleSchema';
 
@@ -437,56 +436,14 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
     // Calendar step is satisfied when connected OR explicitly skipped.
     const calendar_skipped = !!restaurant?.calendar_skipped_at;
 
-    // Build user context
-    const ctx: UserContext = {
+    // Onboarding was removed: a linked restaurant goes straight to the dashboard.
+    // The remaining status fields are kept for the Settings UI; next_route is a
+    // simple entry-point hint, no longer a multi-step gate.
+    return res.json({
       user: {
         id: userId,
         email: req.user?.email || '',
       },
-      restaurant: restaurant
-        ? {
-            id: restaurant.id,
-            status: restaurant.restaurant_status || 'draft',
-            is_complete: !!is_complete,
-            has_hours,
-            slug: restaurant.slug,
-          }
-        : undefined,
-      subscription: restaurant
-        ? {
-            status: restaurant.subscription_status || 'none',
-          }
-        : undefined,
-      calendar: restaurant
-        ? {
-            status: restaurant.calendar_status || 'not_connected',
-            skipped: calendar_skipped,
-          }
-        : undefined,
-      provisioning: restaurant
-        ? {
-            status: restaurant.provisioning_status || 'not_started',
-          }
-        : undefined,
-      assistant: restaurant
-        ? {
-            status: restaurant.assistant_status || 'inactive',
-          }
-        : undefined,
-      onboarding: restaurant
-        ? {
-            status: restaurant.onboarding_status || 'not_started',
-          }
-        : undefined,
-      test_call_completed: restaurant?.test_call_completed || false,
-    };
-
-    // Resolve next route
-    const next_route = resolveNextRoute(ctx);
-
-    // Return full context
-    return res.json({
-      user: ctx.user,
       restaurant: restaurant
         ? {
             id: restaurant.id,
@@ -500,24 +457,24 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
           }
         : null,
       subscription: {
-        status: ctx.subscription?.status || 'none',
+        status: restaurant?.subscription_status || 'none',
       },
       calendar: {
-        status: ctx.calendar?.status || 'not_connected',
+        status: restaurant?.calendar_status || 'not_connected',
         skipped: calendar_skipped,
       },
       provisioning: {
-        status: ctx.provisioning?.status || 'not_started',
+        status: restaurant?.provisioning_status || 'not_started',
         phone_number: restaurant?.vapi_phone_number,
       },
       onboarding: {
-        status: ctx.onboarding?.status || 'not_started',
-        test_call_completed: ctx.test_call_completed,
+        status: restaurant?.onboarding_status || 'not_started',
+        test_call_completed: restaurant?.test_call_completed || false,
       },
       assistant: {
-        status: ctx.assistant?.status || 'inactive',
+        status: restaurant?.assistant_status || 'inactive',
       },
-      next_route,
+      next_route: restaurant ? '/dashboard' : null,
     });
   } catch (err: any) {
     logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, '[/me] Error fetching user data');
@@ -535,81 +492,5 @@ router.get('/me', authenticateToken, getUserContextWithNextRoute);
 // Returns complete authentication + permission context in one call
 
 router.get('/app-state', authenticateToken, getUserContextWithNextRoute);
-
-// ── POST /auth/onboarding/complete ───────────────────────────────────────────────
-// Persists onboarding_status='complete' — but ONLY after re-deriving that every
-// business step is genuinely satisfied from the real DB columns. This keeps the
-// stored flag honest: it can never be set while a step is still missing.
-async function completeOnboarding(req: AuthRequest, res: Response) {
-  try {
-    const restaurantId = req.user?.restaurantId;
-    if (!restaurantId) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-
-    const { data: restaurant, error } = await supabase
-      .from('restaurants')
-      .select('*')
-      .eq('id', restaurantId)
-      .single();
-
-    if (error || !restaurant) {
-      return res.status(404).json({ error: 'Restaurant not found' });
-    }
-
-    const is_complete = !!(
-      restaurant.name && restaurant.owner_name && restaurant.address && restaurant.phone
-    );
-    const has_hours = Array.isArray(restaurant.opening_hours) && restaurant.opening_hours.length > 0;
-    const calendarDecided =
-      restaurant.calendar_status === 'connected' || !!restaurant.calendar_skipped_at;
-    const assistantActive = (restaurant.assistant_status || 'inactive') === 'active';
-
-    // Re-derive the next required step. If anything is missing, refuse to mark
-    // complete and tell the client exactly where to go.
-    const ctx: UserContext = {
-      user: { id: req.user!.userId, email: req.user!.email || '' },
-      restaurant: {
-        id: restaurant.id,
-        status: restaurant.restaurant_status || 'draft',
-        is_complete,
-        has_hours,
-        slug: restaurant.slug,
-      },
-      subscription: { status: restaurant.subscription_status || 'none' },
-      calendar: { status: restaurant.calendar_status || 'not_connected', skipped: calendarDecided },
-      provisioning: { status: restaurant.provisioning_status || 'not_started' },
-      assistant: { status: restaurant.assistant_status || 'inactive' },
-      onboarding: { status: 'complete' }, // hypothetically complete — check the rest
-      test_call_completed: restaurant.test_call_completed || false,
-    };
-
-    if (!is_complete || !has_hours || !calendarDecided || !assistantActive) {
-      // Recompute with real onboarding status to surface the blocking step.
-      ctx.onboarding = { status: restaurant.onboarding_status || 'not_started' };
-      return res.status(409).json({
-        error: 'Onboarding incomplete',
-        next_route: resolveNextRoute(ctx),
-      });
-    }
-
-    const { error: updateError } = await supabase
-      .from('restaurants')
-      .update({ onboarding_status: 'complete' })
-      .eq('id', restaurantId);
-
-    if (updateError) {
-      logger.error({ err: updateError }, '[onboarding/complete] update error');
-      return res.status(500).json({ error: 'Failed to complete onboarding' });
-    }
-
-    return res.json({ status: 'complete', next_route: '/dashboard' });
-  } catch (err: any) {
-    logger.error({ err: err?.message }, '[onboarding/complete] error');
-    return res.status(500).json({ error: 'Failed to complete onboarding' });
-  }
-}
-
-router.post('/onboarding/complete', authenticateToken, completeOnboarding);
 
 export default router;
