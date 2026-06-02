@@ -196,6 +196,24 @@ export async function createBooking(
         .single();
 
     if (error || !booking) {
+        // Race-safe idempotency: if two VAPI retries pass the SELECT check above
+        // concurrently, the unique index on (restaurant_id, call_id) makes the
+        // second INSERT fail with Postgres 23505. Recover the row already created
+        // by the winning request instead of throwing / double-booking.
+        if (error?.code === '23505' && idempotency_key) {
+            const { data: winner } = await supabase
+                .from('bookings')
+                .select('*')
+                .eq('restaurant_id', restaurant_id)
+                .eq('call_id', idempotency_key)
+                .maybeSingle();
+
+            if (winner) {
+                log.info({ bookingId: winner.id }, 'Idempotent booking — recovered after unique-violation race');
+                return winner;
+            }
+        }
+
         log.error({ error }, 'Booking insert failed');
         errorTracking.bookingCreationFailed({
             restaurant_id,
