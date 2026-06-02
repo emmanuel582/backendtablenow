@@ -3,6 +3,7 @@
 // Called once at onboarding — not in real-time flow
 
 import { Request, Response } from 'express';
+import logger from '../lib/logger';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { Readability } from '@mozilla/readability';
@@ -289,7 +290,7 @@ export async function autocompleteRestaurant(req: Request, res: Response) {
 
         return res.json({ suggestions });
     } catch (err: any) {
-        console.error('[Autocomplete Error]', err?.response?.data || err.message);
+        logger.error({ err }, '[Autocomplete Error]');
         return res.json({ suggestions: [] });
     }
 }

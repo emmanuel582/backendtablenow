@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import logger from '../lib/logger';
 import emailService from '../services/email.service';
 
 const router = Router();
@@ -22,7 +23,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
     res.json({ success: true });
   } catch (err) {
-    console.error('contact email error', err);
+    logger.error({ err }, 'contact email error');
     res.status(500).json({ error: 'Failed to send email' });
   }
 });

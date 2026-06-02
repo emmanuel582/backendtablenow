@@ -154,36 +154,36 @@ STYLE:
 
     async createAssistant(restaurantData: any): Promise<any> {
         try {
-            console.log(`🚀 Creating VAPI Assistant for ${restaurantData.name}...`);
+            logger.info({ restaurant: restaurantData.name }, 'Creating VAPI assistant');
             const response = await axios.post(
                 `${VAPI_BASE_URL}/assistant`,
                 this.buildAssistantPayload(restaurantData),
                 { headers: this.headers }
             );
-            console.log(`✅ Assistant created: ${response.data.id}`);
+            logger.info({ assistantId: response.data.id }, 'VAPI assistant created');
             return response.data;
         } catch (error: any) {
-            console.error('Error creating VAPI assistant:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error creating VAPI assistant');
             throw error;
         }
     }
 
     async updateAssistant(assistantId: string, restaurantData: any): Promise<any> {
         try {
-            console.log(`🔄 Updating VAPI Assistant ${assistantId}...`);
+            logger.info({ assistantId }, 'Updating VAPI assistant');
             const response = await axios.patch(
                 `${VAPI_BASE_URL}/assistant/${assistantId}`,
                 this.buildAssistantPayload(restaurantData),
                 { headers: this.headers }
             );
-            console.log(`✅ Assistant ${assistantId} updated`);
+            logger.info({ assistantId }, 'VAPI assistant updated');
             return response.data;
         } catch (error: any) {
             if (error.response?.status === 404) {
-                console.warn(`⚠️  Assistant ${assistantId} not found (404)`);
+                logger.warn({ assistantId }, 'VAPI assistant not found (404)');
                 return null;
             }
-            console.error('❌ Error updating VAPI assistant:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error updating VAPI assistant');
             throw error;
         }
     }
@@ -242,7 +242,7 @@ STYLE:
 
             const serverUrl = `${process.env.BACKEND_URL}/api/vapi/assistant-config`;
             await axios.patch(`${VAPI_BASE_URL}/phone-number/${available.id}`, { serverUrl }, { headers: this.headers });
-            console.log(`📞 Assigned: ${available.number} (${available.id})`);
+            logger.info({ number: available.number, phoneId: available.id }, 'VAPI phone number assigned');
             return available;
         } catch (error: any) {
             // Cleanup orphan : si on a créé un assistant juste avant et que l'attribution
@@ -262,7 +262,7 @@ STYLE:
                     );
                 }
             }
-            console.error('Error assigning VAPI phone number:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error assigning VAPI phone number');
             throw error;
         }
     }
@@ -275,10 +275,10 @@ STYLE:
                 { assistantId, serverUrl },
                 { headers: this.headers }
             );
-            console.log(`🔗 Phone ${phoneNumberId} linked to assistant ${assistantId}`);
+            logger.info({ phoneNumberId, assistantId }, 'VAPI phone linked to assistant');
             return response.data;
         } catch (error: any) {
-            console.error('Error linking assistant to phone:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error linking assistant to phone');
             throw error;
         }
     }
@@ -287,7 +287,7 @@ STYLE:
         try {
             await axios.delete(`${VAPI_BASE_URL}/phone-number/${phoneNumberId}`, { headers: this.headers });
         } catch (error: any) {
-            console.error('Error deleting phone number:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error deleting phone number');
             throw error;
         }
     }
@@ -296,7 +296,7 @@ STYLE:
         try {
             await axios.delete(`${VAPI_BASE_URL}/assistant/${assistantId}`, { headers: this.headers });
         } catch (error: any) {
-            console.error('Error deleting assistant:', error.response?.data || error.message);
+            logger.error({ err: error }, 'Error deleting assistant');
             throw error;
         }
     }

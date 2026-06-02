@@ -177,7 +177,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
                 : res.status(404).json(payload);
         }
 
-        console.log(`🔍 check-availability: ${resolvedId} — ${date} ${time} x${covers}`);
+        logger.info({ restaurantId: resolvedId, date, time, covers }, 'check-availability');
 
         // Check closed dates
         const { data: closed } = await supabase
@@ -205,7 +205,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
         });
 
         if (error) {
-            console.error('❌ get_available_slots error:', error);
+            logger.error({ err: error }, 'get_available_slots error');
             const payload = { available: false, message: 'Impossible de vérifier la disponibilité.' };
             return toolCall
                 ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
@@ -234,7 +234,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
                 : res.json(payload);
         }
 
-        console.log(`✅ Available at ${time} — ${slotMatch.remaining} remaining`);
+        logger.info({ time, remaining: slotMatch.remaining }, 'slot available');
         const payload = {
             available: true,
             message: `Le créneau du ${date} à ${time} pour ${covers} personne${covers > 1 ? 's' : ''} est disponible.`
@@ -243,7 +243,7 @@ router.post('/check-availability', async (req: Request, res: Response) => {
             ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
             : res.json(payload);
     } catch (error: any) {
-        console.error('❌ check-availability error:', error);
+        logger.error({ err: error }, 'check-availability error');
         res.status(500).json({ error: 'Availability check failed' });
     }
 });
@@ -301,11 +301,11 @@ router.post('/create-booking', async (req: Request, res: Response) => {
     });
 
     if (!validation.valid) {
-        console.warn('⚠️ create-booking rejected — incomplete/invalid payload', {
+        logger.warn({
             missing: validation.missing,
             invalid: validation.invalid,
             callId: message?.call?.id,
-        });
+        }, 'create-booking rejected — incomplete/invalid payload');
         const payload = {
             success: false,
             status: 'needs_clarification' as const,
@@ -338,7 +338,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
     const phoneRedacted = guestPhone
         ? `${guestPhone.slice(0, 3)}******${guestPhone.slice(-2)}`
         : 'none';
-    console.log('📝 create-booking', {
+    logger.info({
         restaurant_id: resolvedId,
         call_id: message?.call?.id || null,
         date,
@@ -347,7 +347,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         customer_present: true,
         phone_redacted: phoneRedacted,
         email_present: !!guestEmail,
-    });
+    }, 'create-booking');
 
     const { data: restaurant } = await supabase
         .from('restaurants')
@@ -400,7 +400,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
         const result = await bookingOrchestrationService.orchestrateBooking(voiceRestaurant, session);
 
         if (result.status === 'success') {
-            console.log(`✅ Booking created via orchestration: ${result.booking_id}`);
+            logger.info({ bookingId: result.booking_id }, 'Booking created via orchestration');
             const payload = { success: true, booking_id: result.booking_id, message: result.message };
             return toolCall
                 ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
@@ -417,7 +417,7 @@ router.post('/create-booking', async (req: Request, res: Response) => {
             ? res.json({ results: [{ toolCallId: toolCall.id, result: JSON.stringify(payload) }] })
             : res.status(httpStatus).json(payload);
     } catch (error: any) {
-        console.error('❌ create-booking error:', error);
+        logger.error({ err: error }, 'create-booking error');
         return res.status(500).json({ success: false, message: 'Erreur lors de la création de la réservation.' });
     }
 });
@@ -448,7 +448,7 @@ async function handleCallStarted(event: any) {
     }
 
     if (!restaurant) {
-        console.error('Restaurant not found for phone:', { phoneId, phoneNum });
+        logger.error({ phoneId, phoneNum }, 'Restaurant not found for phone');
         return;
     }
 
@@ -507,10 +507,10 @@ async function handleCallEnded(event: any) {
         }
     }
 
-    console.log('Processing call end event:', {
+    logger.info({
         type: event.type, callId, phoneId, phoneNum,
         extractedDuration: duration, hasTranscript: !!finalTranscript, hasRecording: !!finalRecordingUrl
-    });
+    }, 'Processing call end event');
 
     try {
         const { data: updated, error: updateError } = await supabase
@@ -578,16 +578,16 @@ async function handleCallEnded(event: any) {
                     raw_payload: event
                 });
 
-                if (insertError) console.error('Call log insert error:', insertError);
-                else console.log('Call log cleanly inserted.');
+                if (insertError) logger.error({ err: insertError }, 'Call log insert error');
+                else logger.info('Call log cleanly inserted');
             } else {
-                console.error('Restaurant not found for call.ended fallback:', { phoneId, phoneNum });
+                logger.error({ phoneId, phoneNum }, 'Restaurant not found for call.ended fallback');
             }
         } else if (updateError) {
-            console.error('Call log update error:', updateError);
+            logger.error({ err: updateError }, 'Call log update error');
         }
     } catch (error) {
-        console.error('Call ended handling error:', error);
+        logger.error({ err: error }, 'Call ended handling error');
     }
 }
 
@@ -598,7 +598,7 @@ async function handleFunctionCall(event: any, res: Response) {
     const { functionName, parameters, call } = event;
     const callerPhone = call?.customer?.number;
 
-    console.log(`Function call: ${functionName}`, parameters);
+    logger.info({ functionName }, 'Function call');
 
     const { data: restaurant } = await supabase
         .from('restaurants')
@@ -645,7 +645,7 @@ async function handleAssistantRequest(event: any, res: Response) {
     const currentTime = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', hour12: false });
     const dayOfWeek = now.toLocaleDateString('fr-FR', { weekday: 'long' });
 
-    console.log(`Injecting dynamic prompt for ${restaurant.name}:`, { currentDate, currentTime, dayOfWeek });
+    logger.info({ restaurant: restaurant.name, currentDate, currentTime, dayOfWeek }, 'Injecting dynamic prompt');
 
     const basePrompt = vapiService.generateSystemPrompt();
     const dynamicContext = `\n\nDONNÉES EN TEMPS RÉEL (NE PAS IGNORER) :\n- Date du jour : ${currentDate} (${dayOfWeek})\n- Heure actuelle : ${currentTime}\n- ID du restaurant : ${restaurant.id}\n\nUtilise ces informations pour résoudre les termes relatifs comme "demain", "ce soir", "vendredi prochain". L'année est ${now.getFullYear()}.`;
@@ -681,7 +681,7 @@ async function handleToolCalls(event: any, res: Response) {
             return res.json({ toolResults: [] });
         }
 
-        console.log('Received tool-calls via webhook:', JSON.stringify({ call, toolCalls }, null, 2));
+        logger.debug({ callId: call?.id, toolCallsCount: toolCalls.length }, 'Received tool-calls via webhook');
 
         const assistantId = call?.assistantId || event.assistantId || event.assistant?.id;
         const phoneId = event.phoneNumber?.id || call?.phoneNumber?.id;
@@ -732,7 +732,7 @@ async function handleToolCalls(event: any, res: Response) {
             result: toolResults[0]?.result
         });
     } catch (error: any) {
-        console.error('VAPI tool-calls error:', error);
+        logger.error({ err: error }, 'VAPI tool-calls error');
         res.status(500).json({ error: 'Tool handling failed' });
     }
 }
@@ -774,7 +774,7 @@ async function executeFunctionCall(functionName: string, restaurant: any, parame
 async function checkAvailability(restaurantId: string, restaurant: any, params: any) {
     const { date, time, partySize } = params;
     const covers = parseInt(partySize, 10);
-    console.log(`🔍 Checking ${restaurantId}: ${date} ${time} x${covers} covers`);
+    logger.info({ restaurantId, date, time, covers }, 'Checking availability');
 
     try {
         const { data: closed } = await supabase
@@ -798,7 +798,7 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
         });
 
         if (error) {
-            console.error('❌ get_available_slots error:', error);
+            logger.error({ err: error }, 'get_available_slots error');
             return { result: 'error', message: 'Impossible de vérifier la disponibilité.' };
         }
 
@@ -819,7 +819,7 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
             };
         }
 
-        console.log(`✅ Available at ${time} — ${slotMatch.remaining} covers remaining`);
+        logger.info({ time, remaining: slotMatch.remaining }, 'slot available');
         return {
             result: 'available',
             booked_for: slotMatch.slot_datetime,
@@ -827,7 +827,7 @@ async function checkAvailability(restaurantId: string, restaurant: any, params: 
             message: `Disponibilité confirmée pour ${covers} personne${covers > 1 ? 's' : ''} le ${date} à ${time}.`
         };
     } catch (err) {
-        console.error('❌ Availability check failed:', err);
+        logger.error({ err }, 'Availability check failed');
         return { result: 'error', message: 'Impossible de vérifier la disponibilité.' };
     }
 }
@@ -868,7 +868,7 @@ async function createBookingTool(restaurantId: string, restaurant: any, params: 
             }
         );
 
-        console.log(`✅ Booking created: ${booking.id}`);
+        logger.info({ bookingId: booking.id }, 'Booking created');
 
         const successMessage = language === 'en'
             ? `Booking confirmed for ${covers} ${covers > 1 ? 'guests' : 'guest'} on ${date} at ${normalizedTime || time} under the name ${guestName}.`
@@ -880,7 +880,7 @@ async function createBookingTool(restaurantId: string, restaurant: any, params: 
             message: successMessage
         };
     } catch (err: any) {
-        console.error('[createBookingTool] Critical error:', err);
+        logger.error({ err }, '[createBookingTool] Critical error');
         return {
             success: false,
             message: language === 'en' ? 'Technical error.' : 'Erreur technique.'
@@ -927,7 +927,7 @@ async function updateBooking(restaurantId: string, restaurant: any, params: any)
                 summary: `Reservation: ${booking.guest_name} (${updates.partySize || booking.party_size} pers.)`
             });
         } catch (err) {
-            console.error('⚠️ Google Calendar update error:', err);
+            logger.error({ err }, 'Google Calendar update error');
         }
     }
 
@@ -971,7 +971,7 @@ async function cancelBooking(restaurantId: string, restaurant: any, params: any)
             const tokens = JSON.parse(restaurant.google_calendar_tokens);
             await calendarService.deleteEvent(tokens, booking.calendar_event_id);
         } catch (err) {
-            console.error('⚠️ Google Calendar delete error:', err);
+            logger.error({ err }, 'Google Calendar delete error');
         }
     }
 

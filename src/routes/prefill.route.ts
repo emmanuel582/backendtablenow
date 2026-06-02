@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import logger from '../lib/logger';
 import { prefillRestaurant, autocompleteRestaurant } from '../controllers/prefillRestaurant';
 
 const router = Router();
@@ -10,12 +11,12 @@ const router = Router();
 // ────────────────────────────────────────────────────────────────────────────────
 
 router.post('/api/restaurants/prefill', (req: Request, res: Response, next) => {
-    console.warn('[DEPRECATED] POST /api/restaurants/prefill - use POST /api/restaurants/prefill for now (will be removed in v2)');
+    logger.warn('[DEPRECATED] POST /api/restaurants/prefill - use POST /api/restaurants/prefill for now (will be removed in v2)');
     return prefillRestaurant(req, res);
 });
 
 router.post('/api/restaurants/autocomplete', (req: Request, res: Response, next) => {
-    console.warn('[DEPRECATED] POST /api/restaurants/autocomplete - use GET /api/prefill/autocomplete instead');
+    logger.warn('[DEPRECATED] POST /api/restaurants/autocomplete - use GET /api/prefill/autocomplete instead');
     return autocompleteRestaurant(req, res);
 });
 
@@ -51,7 +52,7 @@ router.get('/api/prefill/autocomplete', async (req: Request, res: Response) => {
 
     res.json({ suggestions });
   } catch (err) {
-    console.error('Autocomplete error:', err);
+    logger.error({ err }, 'Autocomplete error');
     res.status(500).json({ error: 'Autocomplete failed' });
   }
 });
@@ -86,7 +87,7 @@ router.get('/api/prefill/details', async (req: Request, res: Response) => {
       cuisineType:  data.primaryTypeDisplayName?.text ?? '',
     });
   } catch (err) {
-    console.error('Places details error:', err);
+    logger.error({ err }, 'Places details error');
     res.status(500).json({ error: 'Details fetch failed' });
   }
 });

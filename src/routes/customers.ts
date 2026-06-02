@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import logger from '../lib/logger';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 
@@ -97,7 +98,7 @@ router.post('/internal/mark-noshows', async (req: Request, res: Response) => {
     if (error) return res.status(500).json({ error: error.message });
 
     const count = typeof data === 'number' ? data : 0;
-    console.log(`[no-show cron] ${count} réservations marquées no_show`);
+    logger.info({ count }, '[no-show cron] reservations marked no_show');
     res.json({ marked: count });
 });
 

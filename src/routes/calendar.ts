@@ -112,7 +112,7 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
         res.cookie('oauth_return_to', safeReturnTo, cookieOptions);
 
         const authUrl = calendarService.getAuthUrl(state);
-        console.log('Set OAuth cookies and generated auth URL', {
+        logger.info({
             stateSet: true,
             returnToSet: true,
             state: state.slice(0, 16) + '...',
@@ -120,10 +120,10 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
             context,
             secure: cookieOptions.secure,
             sameSite: cookieOptions.sameSite
-        });
+        }, 'Set OAuth cookies and generated auth URL');
         res.json({ authUrl });
     } catch (error: any) {
-        console.error('Get auth URL error:', error);
+        logger.error({ err: error }, 'Get auth URL error');
         res.status(500).json({ error: 'Failed to generate auth URL' });
     }
 });
@@ -192,7 +192,7 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
             .eq('id', restaurantId);
 
         if (updateError) {
-            console.error('Calendar disconnect error:', updateError);
+            logger.error({ err: updateError }, 'Calendar disconnect error');
             return res.status(500).json({ error: 'Failed to disconnect calendar' });
         }
 
@@ -203,7 +203,7 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
             calendar_skipped_at: null
         });
     } catch (error: any) {
-        console.error('Calendar disconnect error:', error);
+        logger.error({ err: error }, 'Calendar disconnect error');
         res.status(500).json({ error: 'Failed to disconnect calendar' });
     }
 });
@@ -226,7 +226,7 @@ router.post('/skip', async (req: AuthRequest, res: Response) => {
             .eq('id', restaurantId);
 
         if (updateError) {
-            console.error('Calendar skip error:', updateError);
+            logger.error({ err: updateError }, 'Calendar skip error');
             return res.status(500).json({ error: 'Failed to skip calendar' });
         }
 
@@ -237,7 +237,7 @@ router.post('/skip', async (req: AuthRequest, res: Response) => {
             calendar_skipped_at: new Date().toISOString()
         });
     } catch (error: any) {
-        console.error('Calendar skip error:', error);
+        logger.error({ err: error }, 'Calendar skip error');
         res.status(500).json({ error: 'Failed to skip calendar' });
     }
 });

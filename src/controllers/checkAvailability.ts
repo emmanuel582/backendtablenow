@@ -5,6 +5,7 @@
 // ============================================
 
 import { createClient } from '@supabase/supabase-js';
+import logger from '../lib/logger';
 import { Request, Response } from 'express';
 
 const supabase = createClient(
@@ -135,7 +136,7 @@ export async function checkAvailability(req: Request, res: Response): Promise<vo
         });
 
     } catch (err: any) {
-        console.error('[check-availability] Erreur:', err);
+        logger.error({ err }, '[check-availability] error');
         res.status(500).json({
             available: false,
             reason: 'internal_error',

@@ -42,7 +42,7 @@ router.get('/', async (req: Request, res: Response) => {
     });
 
     if (error) {
-        console.error('[availability] get_available_slots error:', error);
+        logger.error({ err: error }, '[availability] get_available_slots error');
         return res.status(500).json({ error: 'Erreur serveur' });
     }
 
@@ -212,7 +212,7 @@ router.post('/bookings', async (req: Request, res: Response) => {
         log.info({ bookingId: booking.id }, 'Booking created via deprecated endpoint');
         return res.json({ success: true, booking });
     } catch (err: any) {
-        console.error('[POST /availability/bookings]', err);
+        logger.error({ err }, '[POST /availability/bookings] error');
         return res.status(500).json({ error: err.message });
     }
 });
