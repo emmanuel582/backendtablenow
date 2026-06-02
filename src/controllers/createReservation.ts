@@ -5,7 +5,7 @@
 
 import { Request, Response } from 'express';
 import supabase from '../config/supabase';
-import calendarService from '../services/calendar.service';
+import calendarSync from '../services/calendarSync.service';
 import emailService from '../services/email.service';
 import logger, { logActionStart } from '../lib/logger';
 import { createBooking } from '../services/booking.service';
@@ -43,42 +43,6 @@ async function withRestaurantLock<T>(restaurantId: string, fn: () => Promise<T>)
             restaurantLocks.delete(restaurantId);
         }
     }
-}
-
-// ============================================
-// Google Calendar — via calendarService centralisé
-// ============================================
-async function createCalendarEvent(restaurantData: any, reservation: any): Promise<string | null> {
-    if (!restaurantData.google_calendar_tokens) return null;
-
-    let tokens: any;
-    try {
-        tokens = typeof restaurantData.google_calendar_tokens === 'string'
-            ? JSON.parse(restaurantData.google_calendar_tokens)
-            : restaurantData.google_calendar_tokens;
-    } catch {
-        return null;
-    }
-
-    if (!tokens?.access_token) return null;
-
-    const startDate = new Date(`${reservation.date}T${reservation.time}:00`);
-    const endDate = new Date(startDate.getTime() + 90 * 60 * 1000);
-
-    const event = await calendarService.createEvent(tokens, {
-        summary: `[TableNow] ${reservation.first_name} ${reservation.last_name} — ${reservation.covers} pers.`,
-        description: [
-            `📞 ${reservation.phone}`,
-            reservation.email ? `📧 ${reservation.email}` : '',
-            reservation.occasion ? `🎉 Occasion : ${reservation.occasion}` : '',
-            `\nRéservation prise automatiquement via TableNow`
-        ].filter(Boolean).join('\n'),
-        start: startDate,
-        end: endDate,
-        attendees: reservation.email ? [reservation.email] : []
-    });
-
-    return event?.id || null;
 }
 
 // ============================================
@@ -196,7 +160,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
 
             const { data: restaurant } = await supabase
                 .from('restaurants')
-                .select('name, phone, address, pms_email, google_calendar_tokens, language')
+                .select('name, phone, address, pms_email, language')
                 .eq('id', restaurant_id)
                 .single();
 
@@ -252,8 +216,7 @@ export async function createReservation(req: Request, res: Response): Promise<vo
                     id: restaurant_id,
                     name: restaurant.name,
                     address: restaurant.address || '',
-                    phone: restaurant.phone || '',
-                    google_calendar_tokens: restaurant.google_calendar_tokens
+                    phone: restaurant.phone || ''
                 }
             );
 
@@ -281,22 +244,8 @@ export async function createReservation(req: Request, res: Response): Promise<vo
             };
 
             // Étapes non-bloquantes après libération du verrou
-            let calendarEventId: string | null = null;
-            try {
-                calendarEventId = await createCalendarEvent(restaurant, reservationInfo);
-                if (calendarEventId) {
-                    await supabase.from('bookings').update({ google_calendar_event_id: calendarEventId }).eq('id', newBooking.id);
-                }
-            } catch (calendarErr: any) {
-                logger.error(
-                    {
-                        action: 'calendar_sync_error',
-                        booking_id: newBooking.id,
-                        error: calendarErr.message
-                    },
-                    'Failed to sync booking to Google Calendar (non-blocking)'
-                );
-            }
+            // Sync vers tous les calendriers connectés (Google, etc.) — best-effort.
+            void calendarSync.onBookingCreated(newBooking.id);
 
             let emailSent = false;
             try {
@@ -337,7 +286,6 @@ export async function createReservation(req: Request, res: Response): Promise<vo
             return res.json({
                 success: true,
                 reservation_id: newBooking.id,
-                calendar_event_id: calendarEventId,
                 confirmation_email_sent: emailSent,
                 bcc_sent: bccSent,
                 agent_script: agentScript
