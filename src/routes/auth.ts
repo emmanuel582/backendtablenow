@@ -329,7 +329,7 @@ router.post('/google/supabase', validate(AuthGoogleSchema), async (req: Request,
             logger.info({ name, slug, email }, 'Creating restaurant from Google OAuth');
             const { data: newRest, error: insertErr } = await supabase
                 .from('restaurants')
-                .insert({ email, name, owner_name: name, google_id: googleId, slug })
+                .insert({ email, name, owner_name: name, google_id: googleId, supabase_user_id: googleId, slug })
                 .select().single();
             if (insertErr) return res.status(500).json({ error: 'Insert failed', detail: insertErr.message });
             const createdRestaurant = newRest;
@@ -363,6 +363,13 @@ router.post('/google/supabase', validate(AuthGoogleSchema), async (req: Request,
             const slug = generateUniqueSlug(restaurant.name);
             await supabase.from('restaurants').update({ slug }).eq('id', restaurant.id);
             restaurant = { ...restaurant, slug };
+        }
+
+        // Ensure the existing row is linked to this Supabase user so auth resolves
+        // by supabase_user_id on subsequent requests.
+        if (!restaurant.supabase_user_id) {
+            await supabase.from('restaurants').update({ supabase_user_id: googleId }).eq('id', restaurant.id);
+            restaurant = { ...restaurant, supabase_user_id: googleId };
         }
 
         if (!restaurant) return res.status(500).json({ error: 'Could not find or create restaurant' });

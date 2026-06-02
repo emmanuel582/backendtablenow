@@ -1,18 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
-import { supabase } from '../config/supabase';
+import { supabase, getUserFromToken } from '../config/supabase';
 import logger from '../lib/logger';
 
 export interface AuthRequest extends Request {
     user?: {
-        userId: string;
+        userId: string;        // auth.users.id (Supabase Auth)
         email: string;
         restaurantId: string;
     };
     restaurant?: any;
 }
 
+/**
+ * Unified Supabase auth: the bearer is a Supabase Auth access_token. We validate
+ * the token, then resolve the `restaurants` row via supabase_user_id (auto-linking
+ * by email if a row exists but isn't linked to this Supabase user yet).
+ *
+ * This is the known-good scheme: any valid session resolves a restaurant, so the
+ * frontend never lands on "Restaurant Not Linked" because of a missing/expired
+ * secondary backend token.
+ */
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -22,40 +30,50 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
 
     try {
-        // Verify backend JWT (issued by /api/auth/google/supabase)
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-
-        if (!decoded.restaurantId) {
-            return res.status(403).json({ error: 'Invalid token: missing restaurantId' });
+        const authUser = await getUserFromToken(token);
+        if (!authUser) {
+            return res.status(403).json({ error: 'Invalid token' });
         }
 
-        // Fetch restaurant from DB
-        const { data: restaurant, error: dbError } = await supabase
+        // 1) Resolve by supabase_user_id
+        let { data: restaurant } = await supabase
             .from('restaurants')
             .select('*')
-            .eq('id', decoded.restaurantId)
-            .single();
+            .eq('supabase_user_id', authUser.id)
+            .maybeSingle();
 
-        if (dbError || !restaurant) {
-            return res.status(403).json({ error: 'Restaurant not found' });
+        // 2) Fallback: existing row by email -> link it to this Supabase user
+        if (!restaurant && authUser.email) {
+            const { data: byEmail } = await supabase
+                .from('restaurants')
+                .select('*')
+                .eq('email', authUser.email)
+                .maybeSingle();
+            if (byEmail) {
+                const { data: linked } = await supabase
+                    .from('restaurants')
+                    .update({ supabase_user_id: authUser.id })
+                    .eq('id', byEmail.id)
+                    .select()
+                    .single();
+                restaurant = linked || byEmail;
+            }
         }
 
-        // Inject user info into request
+        if (!restaurant) {
+            return res.status(403).json({ error: 'Restaurant not found', code: 'NO_RESTAURANT' });
+        }
+
         req.user = {
-            userId: decoded.id,
-            email: decoded.email,
+            userId: authUser.id,
+            email: authUser.email || restaurant.email,
             restaurantId: restaurant.id,
         };
         req.restaurant = restaurant;
 
         next();
     } catch (error: any) {
-        if (error.name === 'JsonWebTokenError') {
-            return res.status(403).json({ error: 'Invalid token' });
-        }
-        if (error.name === 'TokenExpiredError') {
-            return res.status(403).json({ error: 'Token expired' });
-        }
+        logger.error({ err: error?.message }, 'Auth middleware error');
         return res.status(403).json({ error: 'Authentication failed' });
     }
 };
