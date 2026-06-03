@@ -1,4 +1,20 @@
+import { resolveNextRoute } from '../../lib/routing';
+
 describe('Authentication', () => {
+  describe('resolveNextRoute (single routing source of truth)', () => {
+    it('routes a linked restaurant to its slug-scoped dashboard', () => {
+      expect(resolveNextRoute({ restaurant: { slug: 'la-trattoria' } })).toBe('/r/la-trattoria/dashboard');
+    });
+
+    it('routes to /login when there is no restaurant', () => {
+      expect(resolveNextRoute({ restaurant: null })).toBe('/login');
+    });
+
+    it('routes to /login when the restaurant has no slug', () => {
+      expect(resolveNextRoute({ restaurant: { slug: null } })).toBe('/login');
+    });
+  });
+
   // Token validation tests
   describe('JWT Token validation', () => {
     it('should validate token structure', () => {

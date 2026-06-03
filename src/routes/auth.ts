@@ -13,6 +13,7 @@ import { generateUniqueSlug, generateSlugWithFallback } from '../lib/supabase.ut
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { validate } from '../middleware/handlers';
 import { AuthGoogleSchema } from '../schemas/authGoogleSchema';
+import { resolveNextRoute } from '../lib/routing';
 
 const router = Router();
 
@@ -474,7 +475,7 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
       assistant: {
         status: 'inactive',
       },
-      next_route: restaurant ? '/dashboard' : '/not-linked',
+      next_route: resolveNextRoute({ restaurant: restaurant ? { slug: restaurant.slug } : null }),
     });
   } catch (err: any) {
     logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, '[/me] Error fetching user data');
