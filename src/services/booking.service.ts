@@ -2,10 +2,13 @@ import supabase from '../config/supabase';
 import logger from '../lib/logger';
 import { DatabaseError, NotFoundError, ConflictError } from '../lib/errors';
 import emailService from './email.service';
-import calendarService from './calendar.service';
+import calendarSync from './calendarSync.service';
+import { zonedWallTimeToUtc } from '../lib/timezone';
 import bookingLogging from './bookingLogging.service';
 import errorTracking from './errorTracking.service';
 import type { CreateBookingInput, BookingQuery } from '../types/schemas';
+
+const DEFAULT_TZ = 'Europe/Paris';
 
 // ─── Normalize ────────────────────────────────────────────────────────────────
 // Single function to normalize any booking row to a consistent shape
@@ -36,7 +39,6 @@ export function normalizeBooking(b: any): any {
         guest_phone:     b.guest_phone ?? customer?.phone ?? null,
         special_requests:  b.special_requests,
         confirmation_number: b.confirmation_number,
-        google_calendar_event_id: b.google_calendar_event_id,
         call_id:         b.call_id,
         created_at:      b.created_at,
         updated_at:      b.updated_at
@@ -133,7 +135,6 @@ interface RestaurantEmailData {
     name: string;
     address?: string;
     phone?: string;
-    google_calendar_tokens?: string | null;
 }
 
 export async function createBooking(
@@ -165,7 +166,15 @@ export async function createBooking(
         }
     }
 
-    const bookedFor = `${date}T${time}:00`;
+    // Resolve the restaurant's timezone so booked_for is a correct UTC instant
+    // (storing "${date}T${time}" naively was the root cause of the 1–2h drift).
+    const { data: tzRow } = await supabase
+        .from('restaurants')
+        .select('timezone')
+        .eq('id', restaurant_id)
+        .single();
+    const tz = tzRow?.timezone || DEFAULT_TZ;
+    const bookedFor = zonedWallTimeToUtc(date, time, tz).toISOString();
 
     // Upsert customer (if phone provided) — shared logic
     const customerId = await upsertCustomer(restaurant_id, guest_name, guest_phone!, guest_email);
@@ -259,21 +268,12 @@ function triggerBookingSideEffects(
             }
         }
 
-        if (restaurant.google_calendar_tokens) {
-            try {
-                const tokens = JSON.parse(restaurant.google_calendar_tokens);
-                const start = new Date(`${date}T${time}`);
-                const end = new Date(start.getTime() + 2 * 3600000);
-                await calendarService.createEvent(tokens, {
-                    summary: `${guestName} (${partySize} pers.)`,
-                    description: `Tel: ${guestPhone} | Email: ${guestEmail}`,
-                    start,
-                    end,
-                    attendees: guestEmail ? [guestEmail] : []
-                });
-            } catch (e) {
-                log.warn({ err: e }, 'Calendar event failed');
-            }
+        // Fan out to every connected calendar (Google, etc.). Source of truth is
+        // the bookings table; any client can also subscribe to the ICS feed.
+        try {
+            await calendarSync.onBookingCreated(booking.id);
+        } catch (e) {
+            log.warn({ err: e }, 'Calendar sync failed');
         }
     });
 }

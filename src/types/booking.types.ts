@@ -40,7 +40,6 @@ export interface CreateBookingResult {
     source: BookingSource;
     special_requests: string | null;
     language: Language;
-    google_calendar_event_id: string | null;
     confirmation_email_sent: boolean;
     bcc_email_sent: boolean;
     created_at: string;
@@ -110,7 +109,6 @@ export interface BookingRecord {
     source: BookingSource;
     status: BookingStatus;
     guest_language: Language;
-    google_calendar_event_id: string | null;
     confirmation_email_sent: boolean;
     bcc_email_sent: boolean;
     created_at: string;

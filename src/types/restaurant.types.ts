@@ -54,8 +54,6 @@ export interface Restaurant {
 export interface RestaurantIntegrations {
     id: string;
     restaurant_id: string;
-    google_calendar_tokens?: GoogleCalendarTokens;
-    google_calendar_tokens_raw?: string; // Raw JSON from DB
     pms_email?: string;
     pms_type?: string; // 'opera', 'micros', 'custom'
     twilio_phone_sid?: string;
@@ -97,7 +95,6 @@ export interface RestaurantRecord {
     settings?: RestaurantSettings | string;
     language: Language;
     timezone: string;
-    google_calendar_tokens?: string; // JSON string in DB
     pms_email?: string;
     pms_type?: string;
     twilio_phone_sid?: string;

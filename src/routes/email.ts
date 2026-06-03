@@ -3,6 +3,7 @@ import { authenticateToken, AuthRequest, validateBCCSecret } from '../middleware
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import { createBooking } from '../services/booking.service';
+import calendarSync from '../services/calendarSync.service';
 import logger from '../lib/logger';
 
 const router = Router();
@@ -58,12 +59,11 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
         // Fetch restaurant for integrations
         const { data: restaurant } = await supabase
             .from('restaurants')
-            .select('name, google_calendar_tokens')
+            .select('name')
             .eq('id', restaurantId)
             .single() as any;
 
         const hubspotService = require('../services/hubspot.service').default;
-        const calendarService = require('../services/calendar.service').default;
 
         // Helper to sync HubSpot deal stage
         const syncHubspotStage = async (dealId: string | null, stage: 'confirmed' | 'cancelled') => {
@@ -124,24 +124,8 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                 logger.error({ err }, 'HubSpot sync error for BCC');
             }
 
-            // 2. Google Calendar Sync
-            if (restaurant?.google_calendar_tokens && parsedData.date && parsedData.time) {
-                try {
-                    const startTime = new Date(`${parsedData.date}T${parsedData.time}:00`);
-                    const endTime = new Date(startTime.getTime() + 90 * 60000); // 90 min default
-
-                    await calendarService.createEvent(JSON.parse(restaurant.google_calendar_tokens), {
-                        summary: `Reservation: ${parsedData.guestName} (${parsedData.partySize} ppl)`,
-                        description: `Source: ${parsedData.source.toUpperCase()}\nPhone: ${parsedData.phone}\nEmail: ${parsedData.email}\nConf: ${parsedData.confirmationNumber}`,
-                        start: startTime,
-                        end: endTime,
-                        attendees: parsedData.email ? [parsedData.email] : []
-                    });
-                    logger.info('Google Calendar event created from BCC');
-                } catch (calError) {
-                    logger.error({ err: calError }, 'Calendar sync error for BCC');
-                }
-            }
+            // 2. Calendar sync — handled by createBooking side effects (onBookingCreated),
+            //    which fans out to every connected calendar.
         }
 
         // Handle modifications
@@ -174,19 +158,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                     .update(updates)
                     .eq('id', booking.id);
 
-                if (restaurant?.google_calendar_tokens && booking.calendar_event_id) {
-                    try {
-                        const startTime = new Date(`${updates.booking_date}T${updates.booking_time}:00`);
-                        const endTime = new Date(startTime.getTime() + 90 * 60000);
-                        await calendarService.updateEvent(JSON.parse(restaurant.google_calendar_tokens), booking.calendar_event_id, {
-                            start: startTime,
-                            end: endTime,
-                            summary: `Reservation: ${booking.guest_name} (${updates.party_size} ppl)`
-                        });
-                    } catch (calError) {
-                        logger.error({ err: calError }, 'Calendar update error for BCC');
-                    }
-                }
+                void calendarSync.onBookingUpdated(booking.id);
 
                 await syncHubspotStage(booking.hubspot_deal_id, 'confirmed');
             }
@@ -215,13 +187,7 @@ router.post('/bcc', validateBCCSecret, async (req: Request, res: Response) => {
                     .update({ status: 'cancelled' })
                     .eq('id', booking.id);
 
-                if (restaurant?.google_calendar_tokens && booking.calendar_event_id) {
-                    try {
-                        await calendarService.deleteEvent(JSON.parse(restaurant.google_calendar_tokens), booking.calendar_event_id);
-                    } catch (calError) {
-                        logger.error({ err: calError }, 'Calendar delete error for BCC');
-                    }
-                }
+                void calendarSync.onBookingCancelled(booking.id);
 
                 await syncHubspotStage(booking.hubspot_deal_id, 'cancelled');
             }

@@ -4,7 +4,7 @@ import supabase from '../config/supabase';
 import emailService from '../services/email.service';
 import vapiService from '../services/vapi.service';
 import logger from '../lib/logger';
-import calendarService from '../services/calendar.service';
+import calendarSync from '../services/calendarSync.service';
 import { validate } from '../middleware/handlers';
 import { VapiWebhookPayloadSchema } from '../schemas/vapiWebhookSchema';
 import vapiController from '../controllers/vapi.controller';
@@ -863,8 +863,7 @@ async function createBookingTool(restaurantId: string, restaurant: any, params: 
                 id: restaurantId,
                 name: restaurant.name,
                 address: restaurant.address || '',
-                phone: restaurant.phone || '',
-                google_calendar_tokens: restaurant.google_calendar_tokens
+                phone: restaurant.phone || ''
             }
         );
 
@@ -915,20 +914,8 @@ async function updateBooking(restaurantId: string, restaurant: any, params: any)
         return { success: false, message: 'Réservation non trouvée.' };
     }
 
-    if (restaurant.google_calendar_tokens && booking.calendar_event_id && (updates.date || updates.time)) {
-        try {
-            const tokens = JSON.parse(restaurant.google_calendar_tokens);
-            const newDate = updates.date || booking.booking_date;
-            const newTime = updates.time || booking.booking_time;
-            const startTime = new Date(`${newDate}T${newTime}:00`);
-            const endTime = new Date(startTime.getTime() + 90 * 60000);
-            await calendarService.updateEvent(tokens, booking.calendar_event_id, {
-                start: startTime, end: endTime,
-                summary: `Reservation: ${booking.guest_name} (${updates.partySize || booking.party_size} pers.)`
-            });
-        } catch (err) {
-            logger.error({ err }, 'Google Calendar update error');
-        }
+    if (updates.date || updates.time || updates.partySize) {
+        void calendarSync.onBookingUpdated(booking.id);
     }
 
     return { success: true, message: 'Réservation modifiée avec succès.' };
@@ -966,14 +953,7 @@ async function cancelBooking(restaurantId: string, restaurant: any, params: any)
         return { success: false, message: 'Impossible d\'annuler la réservation.' };
     }
 
-    if (restaurant.google_calendar_tokens && booking.calendar_event_id) {
-        try {
-            const tokens = JSON.parse(restaurant.google_calendar_tokens);
-            await calendarService.deleteEvent(tokens, booking.calendar_event_id);
-        } catch (err) {
-            logger.error({ err }, 'Google Calendar delete error');
-        }
-    }
+    void calendarSync.onBookingCancelled(booking.id);
 
     return { success: true, message: 'Réservation annulée avec succès.' };
 }

@@ -22,7 +22,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     try {
         const restaurant = req.restaurant;
         if (!restaurant) return res.status(404).json({ error: 'Restaurant not found' });
-        const { password, verification_token, google_calendar_tokens, ...settings } = restaurant;
+        const { password, verification_token, ...settings } = restaurant;
         res.json({ settings });
     } catch (error: any) {
         logger.error({ error }, 'Get settings error');
@@ -64,7 +64,7 @@ router.put('/', async (req: AuthRequest, res: Response) => {
             }
         }
 
-        const { password, verification_token, google_calendar_tokens, ...settings } = restaurant;
+        const { password, verification_token, ...settings } = restaurant;
         res.json({ message: 'Settings updated successfully', settings });
     } catch (error: any) {
         logger.error({ error }, 'Update settings error');

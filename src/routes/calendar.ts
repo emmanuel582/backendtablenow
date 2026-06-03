@@ -1,8 +1,9 @@
-import { Router, Response } from 'express';
+import { Router, Response, Request } from 'express';
 import crypto from 'crypto';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import calendarService from '../services/calendar.service';
+import { buildIcsFeed } from '../services/ics.service';
 import { config } from '../lib/config';
 import logger from '../lib/logger';
 import { validate } from '../middleware/handlers';
@@ -28,99 +29,117 @@ function isValidReturnPath(path: string): boolean {
     );
 }
 
+function feedUrls(restaurantId: string, token: string) {
+    const url = `${config.backendUrl}/api/calendar/feed/${restaurantId}/${token}.ics`;
+    return {
+        feedUrl: url,
+        // webcal:// makes one-tap subscribe work on Apple/Outlook/Google.
+        webcalUrl: url.replace(/^https?:\/\//, 'webcal://'),
+    };
+}
+
+// ─── Public: universal ICS feed ───────────────────────────────────────────────
+// Any calendar app (Google, Apple, Outlook, …) can subscribe to this URL.
+// Auth is via the unguessable per-restaurant feed token, so this must be public.
+router.get('/feed/:restaurantId/:token', async (req: Request, res: Response) => {
+    try {
+        const { restaurantId } = req.params;
+        const token = req.params.token.replace(/\.ics$/i, '');
+
+        const { data: restaurant } = await supabase
+            .from('restaurants')
+            .select('id, name, timezone, default_duration_min, calendar_feed_token')
+            .eq('id', restaurantId)
+            .single();
+
+        if (!restaurant || !restaurant.calendar_feed_token || restaurant.calendar_feed_token !== token) {
+            return res.status(404).send('Not found');
+        }
+
+        // Recent past (so cancellations propagate) + everything upcoming.
+        const since = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
+        const { data: bookings } = await supabase
+            .from('bookings')
+            .select('id, booking_date, booking_time, booked_for, party_size, covers, guest_name, guest_phone, guest_email, special_requests, confirmation_number, status, updated_at')
+            .eq('restaurant_id', restaurantId)
+            .gte('booking_date', since)
+            .order('booking_date', { ascending: true });
+
+        const ics = buildIcsFeed(restaurant, bookings || []);
+
+        res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+        res.setHeader('Content-Disposition', `inline; filename="tablenow-${restaurantId}.ics"`);
+        res.setHeader('Cache-Control', 'no-cache');
+        return res.send(ics);
+    } catch (error: any) {
+        logger.error({ err: error }, 'ICS feed error');
+        return res.status(500).send('Internal error');
+    }
+});
+
 /**
- * Handle Google OAuth callback (Redirect from Google)
- * This must be public as Google doesn't allow auth headers in redirects
- * Validates state, reads returnTo, clears cookies, redirects with code/error
- * Does NOT exchange tokens here — that happens on POST /callback (authenticated)
+ * Handle Google OAuth callback (Redirect from Google).
+ * Public — Google doesn't allow auth headers in redirects. Validates CSRF state,
+ * then redirects to the frontend with the code (exchanged via POST /callback).
  */
 router.get('/callback', (req: any, res: Response) => {
     const { code, error, state } = req.query;
     const cookieState = req.cookies?.oauth_state;
     const cookieReturnTo = req.cookies?.oauth_return_to;
 
-    // Determine safe return path
     const returnTo = isValidReturnPath(cookieReturnTo) ? cookieReturnTo : '/settings';
 
-    // Handle Google error response
-    if (error) {
+    const fail = (reason: string) => {
         res.clearCookie('oauth_state');
         res.clearCookie('oauth_return_to');
-        return res.redirect(`${config.frontendUrl}${returnTo}?error=${encodeURIComponent(error)}`);
-    }
+        return res.redirect(`${config.frontendUrl}${returnTo}?error=${encodeURIComponent(reason)}`);
+    };
 
-    if (!code) {
-        res.clearCookie('oauth_state');
-        res.clearCookie('oauth_return_to');
-        return res.redirect(`${config.frontendUrl}${returnTo}?error=no_code`);
-    }
-
-    // Verify CSRF state token
+    if (error) return fail(String(error));
+    if (!code) return fail('no_code');
     if (!state) {
-        logger.error({ action: 'calendar_callback', has_cookie: !!cookieState, has_code: !!code }, 'OAuth callback missing state parameter');
-        res.clearCookie('oauth_state');
-        res.clearCookie('oauth_return_to');
-        return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state`);
+        logger.error({ action: 'calendar_callback', has_cookie: !!cookieState }, 'OAuth callback missing state');
+        return fail('invalid_state');
     }
-
     if (!cookieState) {
-        logger.error({ action: 'calendar_callback', state_length: state?.length }, 'OAuth state cookie not found');
-        res.clearCookie('oauth_state');
-        res.clearCookie('oauth_return_to');
-        return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=no_cookie`);
+        logger.error({ action: 'calendar_callback' }, 'OAuth state cookie not found');
+        return fail('invalid_state');
     }
-
     if (state !== cookieState) {
-        logger.error({ action: 'calendar_callback', state_match: false }, 'OAuth state mismatch');
-        res.clearCookie('oauth_state');
-        res.clearCookie('oauth_return_to');
-        return res.redirect(`${config.frontendUrl}${returnTo}?error=invalid_state&reason=mismatch`);
+        logger.error({ action: 'calendar_callback' }, 'OAuth state mismatch');
+        return fail('invalid_state');
     }
 
-    // Clear both cookies
     res.clearCookie('oauth_state');
     res.clearCookie('oauth_return_to');
-
-    // Redirect to frontend with code, where it will be exchanged via POST
     res.redirect(`${config.frontendUrl}${returnTo}?code=${code}`);
 });
 
 router.use(authenticateToken);
 
 /**
- * Get Google Calendar authorization URL
+ * Get Google Calendar authorization URL.
  * Supports ?returnTo=<path>&context=setup|dashboard
  */
 router.get('/auth-url', (req: AuthRequest, res: Response) => {
     try {
         const { returnTo = '/settings', context } = req.query as any;
         const state = crypto.randomBytes(32).toString('hex');
-
-        // Validate returnTo to prevent open redirects
         const safeReturnTo = isValidReturnPath(returnTo) ? returnTo : '/settings';
 
-        // Store state and returnTo in httpOnly cookies (expires in 10 min)
         const cookieOptions = {
             httpOnly: true,
             secure: true,
             sameSite: 'lax',
             maxAge: 10 * 60 * 1000,
-            path: '/'
+            path: '/',
         } as any;
 
         res.cookie('oauth_state', state, cookieOptions);
         res.cookie('oauth_return_to', safeReturnTo, cookieOptions);
 
         const authUrl = calendarService.getAuthUrl(state);
-        logger.info({
-            stateSet: true,
-            returnToSet: true,
-            state: state.slice(0, 16) + '...',
-            returnTo: safeReturnTo,
-            context,
-            secure: cookieOptions.secure,
-            sameSite: cookieOptions.sameSite
-        }, 'Set OAuth cookies and generated auth URL');
+        logger.info({ returnTo: safeReturnTo, context }, 'Generated calendar auth URL');
         res.json({ authUrl });
     } catch (error: any) {
         logger.error({ err: error }, 'Get auth URL error');
@@ -129,45 +148,48 @@ router.get('/auth-url', (req: AuthRequest, res: Response) => {
 });
 
 /**
- * OAuth callback - exchange code for tokens (authenticated)
- * This is where tokens are actually exchanged and stored
+ * OAuth callback — exchange code for tokens and store a Google push connection.
  */
-router.post('/callback', authenticateToken, validate(ValidatedCalendarCallback), async (req: AuthRequest, res: Response) => {
+router.post('/callback', validate(ValidatedCalendarCallback), async (req: AuthRequest, res: Response) => {
     try {
         const { code } = req.body;
         const restaurantId = req.user!.restaurantId;
 
-        if (!code) {
-            return res.status(400).json({ error: 'Authorization code required' });
+        if (!code) return res.status(400).json({ error: 'Authorization code required' });
+
+        const tokens = await calendarService.getTokensFromCode(code);
+        const accountEmail = await calendarService.getAccountEmail(tokens);
+
+        // One Google connection per restaurant for now: replace any existing.
+        await supabase
+            .from('calendar_connections')
+            .delete()
+            .eq('restaurant_id', restaurantId)
+            .eq('provider', 'google');
+
+        const { error: insertError } = await supabase
+            .from('calendar_connections')
+            .insert({
+                restaurant_id: restaurantId,
+                provider: 'google',
+                account_email: accountEmail,
+                calendar_id: 'primary',
+                tokens,
+                status: 'active',
+            });
+
+        if (insertError) {
+            logger.error({ action: 'calendar_callback', error: insertError.message, restaurant_id: restaurantId }, 'Connection insert error');
+            return res.status(500).json({ error: 'Failed to save calendar connection' });
         }
 
-        // Exchange code for tokens
-        const tokens = await calendarService.getTokensFromCode(code);
-
-        // Store tokens and update calendar status in database
-        const { error: updateError } = await supabase
+        await supabase
             .from('restaurants')
-            .update({
-                google_calendar_tokens: JSON.stringify(tokens),
-                calendar_status: 'connected',
-                calendar_provider: 'google',
-                calendar_skipped_at: null,
-            })
+            .update({ calendar_status: 'connected', calendar_skipped_at: null })
             .eq('id', restaurantId);
 
-        if (updateError) {
-            logger.error({ action: 'calendar_callback', error: updateError.message, restaurant_id: restaurantId }, 'Calendar callback update error');
-            return res.status(500).json({ error: 'Failed to update calendar status' });
-        }
-
-        logger.info({ action: 'calendar_callback', restaurant_id: restaurantId }, 'Calendar connected successfully');
-
-        // Return safe response WITHOUT tokens
-        res.json({
-            success: true,
-            calendar_status: 'connected',
-            calendar_provider: 'google'
-        });
+        logger.info({ action: 'calendar_callback', restaurant_id: restaurantId }, 'Calendar connected');
+        res.json({ success: true, calendar_status: 'connected', calendar_provider: 'google', account_email: accountEmail });
     } catch (error: any) {
         logger.error({ action: 'calendar_callback', error: error.message }, 'Calendar callback error');
         res.status(500).json({ error: 'Failed to connect calendar' });
@@ -175,33 +197,119 @@ router.post('/callback', authenticateToken, validate(ValidatedCalendarCallback),
 });
 
 /**
- * Disconnect calendar
+ * List connected push calendars (never returns tokens).
+ */
+router.get('/connections', async (req: AuthRequest, res: Response) => {
+    try {
+        const restaurantId = req.user!.restaurantId;
+        const { data, error } = await supabase
+            .from('calendar_connections')
+            .select('id, provider, account_email, calendar_id, status, sync_enabled, last_synced_at, last_error, created_at')
+            .eq('restaurant_id', restaurantId)
+            .order('created_at', { ascending: true });
+
+        if (error) return res.status(500).json({ error: 'Failed to load connections' });
+        res.json({ connections: data || [] });
+    } catch (error: any) {
+        logger.error({ err: error }, 'List connections error');
+        res.status(500).json({ error: 'Failed to load connections' });
+    }
+});
+
+/**
+ * Get the universal ICS feed URL (subscribe from any calendar app).
+ */
+router.get('/feed-url', async (req: AuthRequest, res: Response) => {
+    try {
+        const restaurantId = req.user!.restaurantId;
+        const { data: restaurant } = await supabase
+            .from('restaurants')
+            .select('calendar_feed_token')
+            .eq('id', restaurantId)
+            .single();
+
+        if (!restaurant?.calendar_feed_token) return res.status(404).json({ error: 'No feed token' });
+        res.json({ ...feedUrls(restaurantId, restaurant.calendar_feed_token), token: restaurant.calendar_feed_token });
+    } catch (error: any) {
+        logger.error({ err: error }, 'Feed URL error');
+        res.status(500).json({ error: 'Failed to get feed URL' });
+    }
+});
+
+/**
+ * Rotate the feed token (invalidates the old subscribe URL).
+ */
+router.post('/feed/rotate', async (req: AuthRequest, res: Response) => {
+    try {
+        const restaurantId = req.user!.restaurantId;
+        const newToken = crypto.randomBytes(24).toString('hex');
+        const { error } = await supabase
+            .from('restaurants')
+            .update({ calendar_feed_token: newToken })
+            .eq('id', restaurantId);
+
+        if (error) return res.status(500).json({ error: 'Failed to rotate feed token' });
+        res.json({ ...feedUrls(restaurantId, newToken), token: newToken });
+    } catch (error: any) {
+        logger.error({ err: error }, 'Feed rotate error');
+        res.status(500).json({ error: 'Failed to rotate feed token' });
+    }
+});
+
+/**
+ * Disconnect a single push connection by id.
+ */
+router.delete('/connections/:id', async (req: AuthRequest, res: Response) => {
+    try {
+        const restaurantId = req.user!.restaurantId;
+        const { error } = await supabase
+            .from('calendar_connections')
+            .delete()
+            .eq('id', req.params.id)
+            .eq('restaurant_id', restaurantId);
+
+        if (error) return res.status(500).json({ error: 'Failed to disconnect' });
+
+        const { count } = await supabase
+            .from('calendar_connections')
+            .select('id', { count: 'exact', head: true })
+            .eq('restaurant_id', restaurantId);
+
+        if (!count) {
+            await supabase.from('restaurants').update({ calendar_status: 'pending' }).eq('id', restaurantId);
+        }
+        res.json({ success: true });
+    } catch (error: any) {
+        logger.error({ err: error }, 'Disconnect connection error');
+        res.status(500).json({ error: 'Failed to disconnect' });
+    }
+});
+
+/**
+ * Disconnect all Google connections (backward-compatible endpoint).
  */
 router.post('/disconnect', async (req: AuthRequest, res: Response) => {
     try {
         const restaurantId = req.user!.restaurantId;
+        await supabase
+            .from('calendar_connections')
+            .delete()
+            .eq('restaurant_id', restaurantId)
+            .eq('provider', 'google');
 
-        const { error: updateError } = await supabase
-            .from('restaurants')
-            .update({
-                google_calendar_tokens: null,
-                calendar_status: 'pending',
-                calendar_provider: null,
-                calendar_skipped_at: null,
-            })
-            .eq('id', restaurantId);
+        const { count } = await supabase
+            .from('calendar_connections')
+            .select('id', { count: 'exact', head: true })
+            .eq('restaurant_id', restaurantId);
 
-        if (updateError) {
-            logger.error({ err: updateError }, 'Calendar disconnect error');
-            return res.status(500).json({ error: 'Failed to disconnect calendar' });
+        if (!count) {
+            await supabase
+                .from('restaurants')
+                .update({ calendar_status: 'pending', calendar_skipped_at: null })
+                .eq('id', restaurantId);
         }
 
-        res.json({
-            success: true,
-            calendar_status: 'pending',
-            calendar_provider: null,
-            calendar_skipped_at: null
-        });
+        res.json({ success: true, calendar_status: count ? 'connected' : 'pending', calendar_provider: null });
     } catch (error: any) {
         logger.error({ err: error }, 'Calendar disconnect error');
         res.status(500).json({ error: 'Failed to disconnect calendar' });
@@ -209,33 +317,21 @@ router.post('/disconnect', async (req: AuthRequest, res: Response) => {
 });
 
 /**
- * Skip Google Calendar (user chooses to continue without it)
- * Marks that user has explicitly skipped Calendar setup
+ * Skip calendar setup (user continues without connecting).
  */
 router.post('/skip', async (req: AuthRequest, res: Response) => {
     try {
         const restaurantId = req.user!.restaurantId;
-
         const { error: updateError } = await supabase
             .from('restaurants')
             .update({
                 calendar_status: 'pending',
-                calendar_provider: null,
                 calendar_skipped_at: new Date().toISOString(),
             })
             .eq('id', restaurantId);
 
-        if (updateError) {
-            logger.error({ err: updateError }, 'Calendar skip error');
-            return res.status(500).json({ error: 'Failed to skip calendar' });
-        }
-
-        res.json({
-            success: true,
-            calendar_status: 'pending',
-            calendar_provider: null,
-            calendar_skipped_at: new Date().toISOString()
-        });
+        if (updateError) return res.status(500).json({ error: 'Failed to skip calendar' });
+        res.json({ success: true, calendar_status: 'pending', calendar_skipped_at: new Date().toISOString() });
     } catch (error: any) {
         logger.error({ err: error }, 'Calendar skip error');
         res.status(500).json({ error: 'Failed to skip calendar' });
