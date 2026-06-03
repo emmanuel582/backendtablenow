@@ -1,0 +1,128 @@
+name: Prod Smoke Test (Auth)
+
+# Smoke test the production auth chain from a GitHub-hosted runner (real internet
+# egress — unlike the Claude Code sandbox). Manual trigger, or fire it from a
+# deploy pipeline via repository_dispatch type "production-deployed".
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [production-deployed]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      APP_BASE_URL: https://app.tablenow.io
+      API_BASE_URL: https://api.tablenow.io
+      # Public values (anon key is the publishable Supabase key). Overridable via
+      # repo secrets/vars of the same name if you ever rotate them.
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://kvxujqgaaongkoczjyhc.supabase.co' }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || 'sb_publishable_goo9ACyFUcqbn8LQboeMSw_ltGPyPCc' }}
+      SMOKE_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+      SMOKE_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+    steps:
+      - name: Public endpoint reachability (no secrets required)
+        run: |
+          set -uo pipefail
+          fail=0
+          check() { # $1=label $2=url $3=expected_code
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$2")
+            if [ "$code" = "$3" ]; then
+              echo "OK   [$1] $2 -> $code"
+            else
+              echo "::error::[$1] $2 -> $code (expected $3)"
+              fail=1
+            fi
+          }
+          echo "── 1-5: public reachability ─────────────────────────────"
+          check "login page"      "$APP_BASE_URL/login"            200
+          check "register page"   "$APP_BASE_URL/register"         200
+          check "forgot page"     "$APP_BASE_URL/forgot-password"  200
+          check "app-state 401"   "$API_BASE_URL/api/auth/app-state" 401
+          check "supabase health" "$SUPABASE_URL/auth/v1/health"   200
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Public reachability checks failed (steps 1-5)."
+            exit 1
+          fi
+
+      - name: Require smoke-test credentials
+        run: |
+          set -uo pipefail
+          missing=0
+          [ -z "${SMOKE_TEST_EMAIL}" ]    && { echo "::error::Secret SMOKE_TEST_EMAIL is not set";    missing=1; }
+          [ -z "${SMOKE_TEST_PASSWORD}" ] && { echo "::error::Secret SMOKE_TEST_PASSWORD is not set"; missing=1; }
+          [ "$missing" -ne 0 ] && exit 1
+          echo "Credentials present."
+
+      - name: Supabase login -> token -> bootstrap -> app-state -> idempotency
+        run: |
+          set -uo pipefail
+
+          echo "── 6-7: Supabase password login ─────────────────────────"
+          login=$(curl -s --max-time 25 -X POST \
+            "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"email\":\"$SMOKE_TEST_EMAIL\",\"password\":\"$SMOKE_TEST_PASSWORD\"}")
+          token=$(echo "$login" | jq -r '.access_token // empty')
+          if [ -z "$token" ]; then
+            echo "::error::Supabase login failed: $(echo "$login" | jq -c '{error,error_description,msg}')"
+            exit 1
+          fi
+          echo "OK   got Supabase access_token (len=${#token})"
+
+          echo "── 8: POST /api/auth/bootstrap (1st call) ───────────────"
+          b1=$(curl -s --max-time 25 -w "\n%{http_code}" -X POST \
+            "$API_BASE_URL/api/auth/bootstrap" \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d "{\"access_token\":\"$token\"}")
+          b1_code=$(echo "$b1" | tail -n1); b1_body=$(echo "$b1" | sed '$d')
+          if [ "$b1_code" != "200" ]; then
+            echo "::error::bootstrap #1 -> $b1_code : $b1_body"; exit 1
+          fi
+          rid1=$(echo "$b1_body" | jq -r '.restaurant.id // empty')
+          [ -z "$rid1" ] && { echo "::error::bootstrap #1 returned no restaurant.id : $b1_body"; exit 1; }
+          echo "OK   bootstrap #1 -> 200, restaurant.id=$rid1"
+
+          echo "── 9: GET /api/auth/app-state (with token) ──────────────"
+          as=$(curl -s --max-time 25 -w "\n%{http_code}" \
+            "$API_BASE_URL/api/auth/app-state" \
+            -H "Authorization: Bearer $token")
+          as_code=$(echo "$as" | tail -n1); as_body=$(echo "$as" | sed '$d')
+          if [ "$as_code" != "200" ]; then
+            echo "::error::app-state -> $as_code : $as_body"; exit 1
+          fi
+          next_route=$(echo "$as_body" | jq -r '.next_route // empty')
+          echo "OK   app-state -> 200, next_route=$next_route"
+
+          echo "── 10: next_route is a real frontend route ──────────────"
+          if ! echo "$next_route" | grep -qE '^/(r/[^/]+/(dashboard|reservations|calls|settings|billing)|login)$'; then
+            echo "::error::next_route '$next_route' is not a recognised frontend route"; exit 1
+          fi
+          nr_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$APP_BASE_URL$next_route")
+          if [ "$nr_code" != "200" ]; then
+            echo "::error::frontend did not serve next_route $APP_BASE_URL$next_route -> $nr_code"; exit 1
+          fi
+          echo "OK   $APP_BASE_URL$next_route -> 200"
+
+          echo "── 11: bootstrap idempotency (2nd call) ─────────────────"
+          b2=$(curl -s --max-time 25 -w "\n%{http_code}" -X POST \
+            "$API_BASE_URL/api/auth/bootstrap" \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d "{\"access_token\":\"$token\"}")
+          b2_code=$(echo "$b2" | tail -n1); b2_body=$(echo "$b2" | sed '$d')
+          rid2=$(echo "$b2_body" | jq -r '.restaurant.id // empty')
+          is_new2=$(echo "$b2_body" | jq -r '.is_new_user')
+          if [ "$b2_code" != "200" ]; then echo "::error::bootstrap #2 -> $b2_code : $b2_body"; exit 1; fi
+          if [ "$rid2" != "$rid1" ]; then
+            echo "::error::idempotency broken: rid1=$rid1 rid2=$rid2 (duplicate restaurant created)"; exit 1
+          fi
+          if [ "$is_new2" != "false" ]; then
+            echo "::error::idempotency broken: 2nd bootstrap reported is_new_user=$is_new2 (expected false)"; exit 1
+          fi
+          echo "OK   bootstrap #2 -> 200, same restaurant.id=$rid2, is_new_user=false"
+
+          echo ""
+          echo "✅ Production auth smoke test passed (steps 1-11)."
