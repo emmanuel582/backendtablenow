@@ -436,10 +436,11 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
     // Calendar step is satisfied when connected OR explicitly skipped.
     const calendar_skipped = !!restaurant?.calendar_skipped_at;
 
-    // Onboarding was removed: a linked restaurant goes straight to the dashboard.
-    // The remaining status fields are kept for the Settings UI; next_route is a
-    // simple entry-point hint, no longer a multi-step gate.
+    // Return app state with correct column names. Uses actual restaurant columns:
+    // - status, calendar_status, calendar_skipped_at exist
+    // - subscription_status, provisioning_status, etc. are derived (TODO: Phase 2)
     return res.json({
+      version: 1,
       user: {
         id: userId,
         email: req.user?.email || '',
@@ -447,34 +448,33 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
       restaurant: restaurant
         ? {
             id: restaurant.id,
-            name: restaurant.name,
-            slug: restaurant.slug,
-            status: restaurant.restaurant_status,
+            name: restaurant.name ?? null,
+            slug: restaurant.slug ?? null,
+            status: restaurant.status ?? null,
             is_complete,
             has_hours,
-            phone: restaurant.phone,
-            email: restaurant.email,
+            phone: restaurant.phone ?? null,
+            email: restaurant.email ?? null,
           }
         : null,
       subscription: {
-        status: restaurant?.subscription_status || 'none',
+        status: 'none',
       },
       calendar: {
         status: restaurant?.calendar_status || 'not_connected',
         skipped: calendar_skipped,
       },
       provisioning: {
-        status: restaurant?.provisioning_status || 'not_started',
-        phone_number: restaurant?.vapi_phone_number,
+        status: 'not_started',
+        phone_number: restaurant?.vapi_phone_number ?? null,
       },
       onboarding: {
-        status: restaurant?.onboarding_status || 'not_started',
-        test_call_completed: restaurant?.test_call_completed || false,
+        status: 'not_started',
       },
       assistant: {
-        status: restaurant?.assistant_status || 'inactive',
+        status: 'inactive',
       },
-      next_route: restaurant ? '/dashboard' : null,
+      next_route: restaurant ? '/dashboard' : '/not-linked',
     });
   } catch (err: any) {
     logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, '[/me] Error fetching user data');
