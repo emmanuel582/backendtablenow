@@ -13,13 +13,10 @@ export interface AuthRequest extends Request {
 }
 
 /**
- * Unified Supabase auth: the bearer is a Supabase Auth access_token. We validate
- * the token, then resolve the `restaurants` row via supabase_user_id (auto-linking
- * by email if a row exists but isn't linked to this Supabase user yet).
+ * Supabase auth: validate token and resolve the user's restaurant.
  *
- * This is the known-good scheme: any valid session resolves a restaurant, so the
- * frontend never lands on "Restaurant Not Linked" because of a missing/expired
- * secondary backend token.
+ * Responsibility: authentication only (validate token, resolve supabase_user_id → restaurant).
+ * Do NOT create or link restaurants — that's /auth/bootstrap only.
  */
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
     const authHeader = req.headers['authorization'];
@@ -35,30 +32,22 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             return res.status(403).json({ error: 'Invalid token' });
         }
 
-        // 1) Resolve by supabase_user_id
-        let { data: restaurant } = await supabase
+        // Security: email must be confirmed in Supabase Auth
+        if (!authUser.email_confirmed_at) {
+            logger.warn(
+                { userId: authUser.id, email: authUser.email },
+                'Access denied: email not confirmed'
+            );
+            return res.status(403).json({ error: 'Email confirmation required', code: 'EMAIL_NOT_CONFIRMED' });
+        }
+
+        // Resolve restaurant by explicit link (supabase_user_id)
+        // Linking happens ONLY in /auth/bootstrap, never here
+        const { data: restaurant } = await supabase
             .from('restaurants')
             .select('*')
             .eq('supabase_user_id', authUser.id)
             .maybeSingle();
-
-        // 2) Fallback: existing row by email -> link it to this Supabase user
-        if (!restaurant && authUser.email) {
-            const { data: byEmail } = await supabase
-                .from('restaurants')
-                .select('*')
-                .eq('email', authUser.email)
-                .maybeSingle();
-            if (byEmail) {
-                const { data: linked } = await supabase
-                    .from('restaurants')
-                    .update({ supabase_user_id: authUser.id })
-                    .eq('id', byEmail.id)
-                    .select()
-                    .single();
-                restaurant = linked || byEmail;
-            }
-        }
 
         if (!restaurant) {
             return res.status(403).json({ error: 'Restaurant not found', code: 'NO_RESTAURANT' });
