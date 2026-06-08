@@ -2,16 +2,24 @@ import { resolveNextRoute } from '../../lib/routing';
 
 describe('Authentication', () => {
   describe('resolveNextRoute (single routing source of truth)', () => {
-    it('routes a linked restaurant to its slug-scoped dashboard', () => {
-      expect(resolveNextRoute({ restaurant: { slug: 'la-trattoria' } })).toBe('/r/la-trattoria/dashboard');
+    it('routes a complete restaurant to its slug-scoped dashboard', () => {
+      expect(resolveNextRoute({ restaurant: { slug: 'la-trattoria', is_complete: true } }))
+        .toBe('/r/la-trattoria/dashboard');
     });
 
-    it('routes to /login when there is no restaurant', () => {
-      expect(resolveNextRoute({ restaurant: null })).toBe('/login');
+    it('routes an incomplete restaurant to its slug-scoped onboarding', () => {
+      expect(resolveNextRoute({ restaurant: { slug: 'la-trattoria', is_complete: false } }))
+        .toBe('/r/la-trattoria/onboarding');
     });
 
-    it('routes to /login when the restaurant has no slug', () => {
-      expect(resolveNextRoute({ restaurant: { slug: null } })).toBe('/login');
+    // Authenticated context only: a missing restaurant/slug is a contained error
+    // (null), never a silent bounce to /login.
+    it('returns null (contained error) when there is no restaurant — never /login', () => {
+      expect(resolveNextRoute({ restaurant: null })).toBeNull();
+    });
+
+    it('returns null (contained error) when the restaurant has no slug — never /login', () => {
+      expect(resolveNextRoute({ restaurant: { slug: null, is_complete: true } })).toBeNull();
     });
   });
 

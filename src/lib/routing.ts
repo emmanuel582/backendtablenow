@@ -1,28 +1,34 @@
 // Single source of routing truth. resolveNextRoute is the ONLY place that decides where
 // the frontend goes after auth or after a config write. The frontend must follow this
 // value verbatim and never reconstruct routes from local heuristics (user id, slug,
-// Supabase session, silent fallbacks).
+// Supabase session, is_complete, silent fallbacks).
 //
-// Target decision order (frontend routing spec §2):
-//   no session             → /login
-//   no restaurant          → /setup/restaurant
-//   hours incomplete       → /setup/hours
-//   calendar unconfigured  → /setup/calendar
-//   assistant unconfigured → /setup/assistant
-//   complete, unconfirmed  → /setup/success
-//   complete               → /r/:slug/dashboard
+// This function only ever runs in an AUTHENTICATED context: it is called from
+// GET /auth/app-state, which sits behind authenticateToken and a resolved restaurant.
+// Therefore it must NEVER send an authenticated user to '/login'. A missing restaurant
+// or slug is a controlled inconsistency, signalled with `null` so the frontend can show
+// a contained error state (NotLinked) instead of bouncing to the login screen.
 //
-// NOTE: the /setup/* gating activates in a later lot, once those pages + their write
-// endpoints exist. Routing there now would strand freshly-created OAuth restaurants on
-// non-existent pages. For the proven golden path a linked restaurant goes straight to its
-// slug-scoped dashboard.
+// Decision order (only restaurant identity gates routing in this lot — calendar,
+// provisioning and assistant are surfaced as state but never block the dashboard):
+//   no restaurant / no slug → null        (controlled error, never /login)
+//   restaurant incomplete   → /r/:slug/onboarding
+//   restaurant complete     → /r/:slug/dashboard
 
 export interface RoutingState {
-  restaurant: { slug?: string | null } | null;
+  restaurant: { slug?: string | null; is_complete?: boolean } | null;
 }
 
-export function resolveNextRoute(state: RoutingState): string {
-  const slug = state.restaurant?.slug;
-  if (!slug) return '/login';
+export function resolveNextRoute(state: RoutingState): string | null {
+  const restaurant = state.restaurant;
+  const slug = restaurant?.slug;
+
+  // Authenticated but no usable restaurant/slug → contained error, NOT a logout.
+  if (!restaurant || !slug) return null;
+
+  // Identity profile incomplete → guided onboarding for this restaurant.
+  if (!restaurant.is_complete) return `/r/${slug}/onboarding`;
+
+  // Operational → slug-scoped dashboard.
   return `/r/${slug}/dashboard`;
 }
