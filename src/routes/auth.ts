@@ -154,9 +154,37 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
     // Calendar step is satisfied when connected OR explicitly skipped.
     const calendar_skipped = !!restaurant?.calendar_skipped_at;
 
-    // Return app state with correct column names. Uses actual restaurant columns:
-    // - status, calendar_status, calendar_skipped_at exist
-    // - subscription_status, provisioning_status, etc. are derived (TODO: Phase 2)
+    // ── Real state derivations (no fictitious value when a real column exists) ────
+    // Onboarding reflects the restaurant identity profile, which is exactly what
+    // gates next_route. It is never "not_started" once a restaurant row exists.
+    const onboardingStatus: 'not_started' | 'in_progress' | 'complete' = !restaurant
+      ? 'not_started'
+      : is_complete
+        ? 'complete'
+        : 'in_progress';
+
+    // Provisioning (VAPI phone) derived from the real vapi_* columns + status.
+    const provisioningStatus: 'not_started' | 'in_progress' | 'complete' | 'error' =
+      restaurant?.vapi_phone_number && restaurant?.vapi_assistant_id
+        ? 'complete'
+        : restaurant?.status === 'error'
+          ? 'error'
+          : restaurant?.status === 'provisioning'
+            ? 'in_progress'
+            : 'not_started';
+
+    // Assistant derived from the real vapi_assistant_id column + status.
+    const assistantStatus: 'inactive' | 'provisioning' | 'active' | 'error' =
+      restaurant?.vapi_assistant_id
+        ? 'active'
+        : restaurant?.status === 'provisioning'
+          ? 'provisioning'
+          : restaurant?.status === 'error'
+            ? 'error'
+            : 'inactive';
+
+    // Calendar, provisioning and assistant are surfaced as real state but do NOT
+    // gate next_route in this lot — only restaurant identity completeness does.
     return res.json({
       version: 1,
       user: {
@@ -169,13 +197,16 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
             name: restaurant.name ?? null,
             slug: restaurant.slug ?? null,
             status: restaurant.status ?? null,
-            is_complete,
+            is_complete: !!is_complete,
             has_hours,
+            owner_name: restaurant.owner_name ?? null,
             phone: restaurant.phone ?? null,
+            address: restaurant.address ?? null,
             email: restaurant.email ?? null,
           }
         : null,
       subscription: {
+        // No billing column exists yet — 'none' is the honest default, not a gate.
         status: 'none',
       },
       calendar: {
@@ -183,16 +214,18 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
         skipped: calendar_skipped,
       },
       provisioning: {
-        status: 'not_started',
+        status: provisioningStatus,
         phone_number: restaurant?.vapi_phone_number ?? null,
       },
       onboarding: {
-        status: 'not_started',
+        status: onboardingStatus,
       },
       assistant: {
-        status: 'inactive',
+        status: assistantStatus,
       },
-      next_route: resolveNextRoute({ restaurant: restaurant ? { slug: restaurant.slug } : null }),
+      next_route: resolveNextRoute({
+        restaurant: restaurant ? { slug: restaurant.slug, is_complete: !!is_complete } : null,
+      }),
     });
   } catch (err: any) {
     logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, '[/app-state] Error fetching user data');
