@@ -46,6 +46,20 @@ const schema = z.object({
     //   'pool'    → cherche un numéro déjà acheté et libre dans le compte VAPI (défaut)
     //   'dynamic' → achat à la volée via POST /phone-number (NON IMPLÉMENTÉ — placeholder)
     VAPI_PROVISIONING_MODE: z.enum(['pool', 'dynamic']).default('pool'),
+
+    // ── Intégrations optionnelles (validées SI fournies) ──────────────────────
+    // TableNow démarre sans elles : ce sont des intégrations remplaçables, pas le
+    // cœur. Une route qui en dépend renvoie un 503 clair si la clé manque, plutôt
+    // que de crasher au boot.
+    // Stripe (paiement)
+    STRIPE_SECRET_KEY:        z.string().min(1).optional(),
+    STRIPE_WEBHOOK_SECRET:    z.string().min(1).optional(),
+    STRIPE_PRICE_EN_CAS:      z.string().min(1).optional(),
+    STRIPE_PRICE_MIAM:        z.string().min(1).optional(),
+    STRIPE_PRICE_FIN_GOURMET: z.string().min(1).optional(),
+    // Secrets d'intégration (HMAC webhook VAPI, signature alias BCC)
+    VAPI_WEBHOOK_SECRET: z.string().min(1).optional(),
+    BCC_SECRET:          z.string().min(1).optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -96,7 +110,19 @@ export const config = {
     vapi: {
         apiKey:           env.VAPI_API_KEY,
         provisioningMode: env.VAPI_PROVISIONING_MODE,
+        webhookSecret:    env.VAPI_WEBHOOK_SECRET,
     },
+    stripe: {
+        secretKey:     env.STRIPE_SECRET_KEY,
+        webhookSecret: env.STRIPE_WEBHOOK_SECRET,
+        prices: {
+            en_cas:      env.STRIPE_PRICE_EN_CAS,
+            miam:        env.STRIPE_PRICE_MIAM,
+            fin_gourmet: env.STRIPE_PRICE_FIN_GOURMET,
+        },
+        isConfigured: Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET),
+    },
+    bccSecret: env.BCC_SECRET,
 } as const;
 
 export type AppConfig = typeof config;
