@@ -12,7 +12,7 @@ export class VapiService {
     };
 
     private getServerUrl(): string {
-        return `${process.env.BACKEND_URL}/api/vapi/webhook`;
+        return `${config.backendUrl}/api/vapi/webhook`;
     }
 
     private buildAssistantPayload(restaurantData: any): object {
@@ -107,7 +107,7 @@ STYLE:
     }
 
     public generateTools(): any[] {
-        const backendUrl = process.env.BACKEND_URL || 'https://api.tablenow.io';
+        const backendUrl = config.backendUrl;
         return [
             {
                 type: 'function',

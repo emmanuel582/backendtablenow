@@ -1,5 +1,6 @@
 import supabase from '../config/supabase';
 import emailService from '../services/email.service';
+import { config } from '../lib/config';
 
 function trialEmailHtml(name: string, daysLeft: number, slug: string): string {
     const isExpired = daysLeft === 0;
@@ -11,8 +12,9 @@ function trialEmailHtml(name: string, daysLeft: number, slug: string): string {
         ? `Votre période d'essai gratuit TableNow est <strong style="color:white">terminée</strong> et votre assistant IA a été mis en pause.`
         : `Votre période d'essai gratuit TableNow arrive à son terme <strong style="color:white">${daysLeft === 1 ? 'demain' : 'dans 2 jours'}</strong>.`;
 
-    // slug reserved for future per-restaurant deep-links
-    void slug;
+    // Deep-link to the restaurant's billing page. config.frontendUrl is the single
+    // domain source; slug scopes the link to this restaurant.
+    const billingUrl = `${config.frontendUrl}/r/${slug}/billing`;
 
     return `
     <div style="font-family:Inter,sans-serif;max-width:600px;margin:0 auto;background:#0a0a0a;color:white;padding:40px;border-radius:16px">
@@ -30,7 +32,7 @@ function trialEmailHtml(name: string, daysLeft: number, slug: string): string {
           }
         </p>
       </div>
-      <a href="https://app.tablenow.io/pricing"
+      <a href="${billingUrl}"
          style="display:inline-block;background:#b8f000;color:black;font-weight:700;padding:14px 28px;border-radius:12px;text-decoration:none">
         Activer mon abonnement →
       </a>

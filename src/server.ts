@@ -37,13 +37,26 @@ app.set('trust proxy', 1);
 // ── Security ───────────────────────────────────────────────────────────────────────────────────────
 app.use(helmet());
 
+// Allowed CORS origins are DERIVED from FRONTEND_URL (single domain source): the
+// app URL itself + the apex and www variants (marketing site). Changing the domain
+// is a one-line env change — no hardcoded tablenow.io anywhere.
+function corsOriginsFromFrontend(frontendUrl: string): string[] {
+    const origins = new Set<string>([frontendUrl]);
+    try {
+        const { hostname, protocol } = new URL(frontendUrl);
+        const apex = hostname.split('.').slice(-2).join('.');
+        if (apex.includes('.')) {
+            origins.add(`${protocol}//${apex}`);
+            origins.add(`${protocol}//www.${apex}`);
+        }
+    } catch { /* frontendUrl already added */ }
+    return [...origins];
+}
+
 const allowedOrigins = [
-    config.frontendUrl,
+    ...corsOriginsFromFrontend(config.frontendUrl),
     'http://localhost:5173',
     'http://localhost:5174',
-    'https://app.tablenow.io',
-    'https://tablenow.io',
-    'https://www.tablenow.io'
 ].filter(Boolean) as string[];
 
 app.use(cors({
