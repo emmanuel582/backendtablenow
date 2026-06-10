@@ -6,6 +6,8 @@ import { generateUniqueSlug } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { resolveNextRoute } from '../lib/routing';
 import { deriveProfile } from '../lib/authBootstrap';
+import { validate } from '../middleware/handlers';
+import { BootstrapSchema } from '../schemas';
 
 const router = Router();
 
@@ -29,16 +31,11 @@ const router = Router();
 // email, creates one only when none exists, and always backfills slug +
 // supabase_user_id so subsequent requests resolve by supabase_user_id.
 //
-// The token comes from the body ({ access_token }) OR the Authorization header
-// (the axios interceptor attaches it). We accept both so every entry point works.
-router.post('/bootstrap', async (req: Request, res: Response) => {
-    const access_token =
-        req.body?.access_token ||
-        (req.headers.authorization?.startsWith('Bearer ') && req.headers.authorization.slice(7));
-
-    if (!access_token) {
-        return res.status(400).json({ error: 'Access token required' });
-    }
+// Body must be exactly { access_token: string } — validated by BootstrapSchema.strict().
+// The token is always explicit from the body; the Authorization header is NOT a fallback
+// here (bootstrap is a deliberate step, not an implicit middleware chain).
+router.post('/bootstrap', validate(BootstrapSchema), async (req: Request, res: Response) => {
+    const { access_token } = req.body;
 
     try {
         const authUser = await getUserFromToken(access_token);
@@ -53,7 +50,10 @@ router.post('/bootstrap', async (req: Request, res: Response) => {
             .select('*')
             .eq('email', profile.email)
             .maybeSingle();
-        if (lookupError) return res.status(500).json({ error: 'Database error', detail: lookupError.message });
+        if (lookupError) {
+            logger.error({ err: lookupError.message }, 'Bootstrap: database lookup failed');
+            return res.status(500).json({ error: 'Database error' });
+        }
 
         // ── Create path: no restaurant for this email yet ──────────────────────
         if (!existing) {
@@ -73,7 +73,8 @@ router.post('/bootstrap', async (req: Request, res: Response) => {
                 })
                 .select().single();
             if (insertErr || !created) {
-                return res.status(500).json({ error: 'Insert failed', detail: insertErr?.message });
+                logger.error({ err: insertErr?.message }, 'Bootstrap: insert failed');
+                return res.status(500).json({ error: 'Failed to create restaurant' });
             }
 
             // VAPI provisioning is a replayable side effect — never blocks bootstrap.
@@ -107,7 +108,7 @@ router.post('/bootstrap', async (req: Request, res: Response) => {
         return res.json({ restaurant: safeRest, is_new_user: false });
     } catch (err: any) {
         logger.error({ err: err?.message, stack: err?.stack?.slice(0, 200) }, 'Bootstrap error');
-        res.status(500).json({ error: 'Internal error', detail: err?.message });
+        res.status(500).json({ error: 'Internal error' });
     }
 });
 
