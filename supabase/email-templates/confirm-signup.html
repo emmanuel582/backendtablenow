@@ -1,0 +1,23 @@
+<!--
+  TableNow — Supabase Auth email: Confirm signup.
+  Supabase reste responsable de l'identité et des tokens. On ne personnalise QUE
+  l'apparence (noir/vert TableNow). À coller dans :
+  Supabase Dashboard → Authentication → Email Templates → "Confirm signup".
+  Variables Supabase disponibles : {{ .ConfirmationURL }}, {{ .Token }},
+  {{ .SiteURL }}, {{ .Email }}.
+-->
+<div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;background:#0a0a0a;color:#ffffff;padding:40px;border-radius:16px">
+  <div style="color:#b8f000;font-size:24px;font-weight:900;margin-bottom:24px">TableNow</div>
+  <h1 style="font-size:26px;font-weight:700;margin:0 0 8px">Confirmez votre email</h1>
+  <div style="width:40px;height:3px;background:#b8f000;margin-bottom:24px"></div>
+  <p style="color:#888;line-height:1.6;margin:0 0 16px">Bienvenue chez TableNow — votre hôte(sse) IA qui prend les appels 24h/24.</p>
+  <p style="color:#888;line-height:1.6;margin:0 0 24px">Confirmez votre adresse email pour activer votre compte et configurer votre restaurant.</p>
+  <a href="{{ .ConfirmationURL }}"
+     style="display:inline-block;background:#b8f000;color:#000000;font-weight:700;padding:14px 28px;border-radius:12px;text-decoration:none">
+    Confirmer mon email →
+  </a>
+  <p style="color:#555;font-size:13px;line-height:1.6;margin:28px 0 0">Ou utilisez ce code : <span style="color:#b8f000;font-weight:700;letter-spacing:2px">{{ .Token }}</span></p>
+  <p style="color:#555;font-size:12px;margin-top:8px">Si le bouton ne fonctionne pas, copiez ce lien :<br/><span style="color:#777">{{ .ConfirmationURL }}</span></p>
+  <p style="color:#555;font-size:12px;margin-top:32px">Vous n'avez pas créé de compte ? Ignorez cet email.</p>
+  <p style="color:#555;font-size:12px">TableNow · Your Restaurant Host(ess) 24/7</p>
+</div>

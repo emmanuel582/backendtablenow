@@ -1,0 +1,18 @@
+<!--
+  TableNow — Supabase Auth email: Magic Link.
+  À coller dans : Supabase Dashboard → Authentication → Email Templates → "Magic Link".
+-->
+<div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;background:#0a0a0a;color:#ffffff;padding:40px;border-radius:16px">
+  <div style="color:#b8f000;font-size:24px;font-weight:900;margin-bottom:24px">TableNow</div>
+  <h1 style="font-size:26px;font-weight:700;margin:0 0 8px">Votre lien de connexion</h1>
+  <div style="width:40px;height:3px;background:#b8f000;margin-bottom:24px"></div>
+  <p style="color:#888;line-height:1.6;margin:0 0 24px">Cliquez ci-dessous pour vous connecter à votre tableau de bord TableNow. Ce lien est valable une seule fois.</p>
+  <a href="{{ .ConfirmationURL }}"
+     style="display:inline-block;background:#b8f000;color:#000000;font-weight:700;padding:14px 28px;border-radius:12px;text-decoration:none">
+    Se connecter →
+  </a>
+  <p style="color:#555;font-size:13px;line-height:1.6;margin:28px 0 0">Ou utilisez ce code : <span style="color:#b8f000;font-weight:700;letter-spacing:2px">{{ .Token }}</span></p>
+  <p style="color:#555;font-size:12px;margin-top:8px">Si le bouton ne fonctionne pas, copiez ce lien :<br/><span style="color:#777">{{ .ConfirmationURL }}</span></p>
+  <p style="color:#555;font-size:12px;margin-top:32px">Vous n'avez pas demandé ce lien ? Ignorez cet email.</p>
+  <p style="color:#555;font-size:12px">TableNow · Your Restaurant Host(ess) 24/7</p>
+</div>
