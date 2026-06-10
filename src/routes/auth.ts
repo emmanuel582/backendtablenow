@@ -1,11 +1,9 @@
 import { Router, Request, Response } from 'express';
-import supabase from '../config/supabase';
+import supabase, { getUserFromToken } from '../config/supabase';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
 import { generateUniqueSlug } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
-import { validate } from '../middleware/handlers';
-import { AuthGoogleSchema } from '../schemas/authGoogleSchema';
 import { resolveNextRoute } from '../lib/routing';
 import { deriveProfile } from '../lib/authBootstrap';
 
@@ -30,21 +28,24 @@ const router = Router();
 // restaurant exists for the user. Idempotent — links an existing restaurant by
 // email, creates one only when none exists, and always backfills slug +
 // supabase_user_id so subsequent requests resolve by supabase_user_id.
-router.post('/bootstrap', validate(AuthGoogleSchema), async (req: Request, res: Response) => {
-    const { access_token } = req.body;
-    try {
-        const userRes = await fetch(`${process.env.SUPABASE_URL}/auth/v1/user`, {
-            headers: {
-                'Authorization': `Bearer ${access_token}`,
-                'apikey':        process.env.SUPABASE_ANON_KEY!,
-                'Content-Type':  'application/json',
-            },
-        });
-        const userBody = await userRes.json() as any;
-        logger.info({ status: userRes.status, email: userBody?.email }, 'Bootstrap: Supabase user fetch');
-        if (!userRes.ok) return res.status(401).json({ error: 'Invalid Supabase token', detail: userBody });
+//
+// The token comes from the body ({ access_token }) OR the Authorization header
+// (the axios interceptor attaches it). We accept both so every entry point works.
+router.post('/bootstrap', async (req: Request, res: Response) => {
+    const access_token =
+        req.body?.access_token ||
+        (req.headers.authorization?.startsWith('Bearer ') && req.headers.authorization.slice(7));
 
-        const profile = deriveProfile(userBody);
+    if (!access_token) {
+        return res.status(400).json({ error: 'Access token required' });
+    }
+
+    try {
+        const authUser = await getUserFromToken(access_token);
+        if (!authUser) return res.status(401).json({ error: 'Invalid Supabase token' });
+        logger.info({ email: authUser.email }, 'Bootstrap: Supabase user validated');
+
+        const profile = deriveProfile(authUser as any);
         if (!profile.email) return res.status(400).json({ error: 'No email in token' });
 
         const { data: existing, error: lookupError } = await supabase
