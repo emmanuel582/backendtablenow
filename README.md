@@ -82,7 +82,7 @@ Le backend orchestre par ailleurs : l'**onboarding** du restaurant, le **provisi
 | Paiement | Stripe (optionnel, initialisé à la demande) |
 | Calendrier | `googleapis` (OAuth + lecture/écriture) · `ical-generator` (flux ICS) |
 | E-mail | Nodemailer (SMTP / Resend) · `mailparser` (parsing BCC) |
-| IA / RAG | OpenAI · Google Generative AI (Gemini) · Pinecone · LangChain |
+| IA / RAG | OpenAI · Google Generative AI (Gemini) · Pinecone |
 | CRM | HubSpot (`@hubspot/api-client`, optionnel) |
 | Sécurité | Helmet · CORS (origines dérivées de `FRONTEND_URL`) · `express-rate-limit` (200 req/15 min) |
 | Tests | Jest + `ts-jest` |
