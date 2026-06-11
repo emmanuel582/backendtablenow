@@ -177,9 +177,16 @@ L'authentification repose **uniquement sur Supabase Auth**. Le backend valide le
 
 ```ts
 export function resolveNextRoute(state: RoutingState): string | null {
-  const slug = state.restaurant?.slug;
-  if (!state.restaurant || !slug) return null;              // erreur contenue (jamais '/login')
-  if (!state.restaurant.is_complete) return `/r/${slug}/onboarding`;
+  const restaurant = state.restaurant;
+  const slug = restaurant?.slug;
+
+  // Authentifié mais aucun restaurant/slug exploitable → erreur contenue, jamais '/login'.
+  if (!restaurant || !slug) return null;
+
+  // Profil d'identité incomplet → onboarding guidé du restaurant.
+  if (!restaurant.is_complete) return `/r/${slug}/onboarding`;
+
+  // Opérationnel → dashboard scopé par slug.
   return `/r/${slug}/dashboard`;
 }
 ```
@@ -206,6 +213,8 @@ Toutes les routes sont préfixées par `/api` (sauf `GET /health`). « Auth » i
 
 **Forme de `GET /auth/app-state`** : `{ version, user, restaurant|null, subscription{status}, calendar{status,skipped}, provisioning{status,phone_number}, onboarding{status}, assistant{status}, next_route }`.
 
+> ⚠️ `subscription.status` est aujourd'hui renvoyé **en dur à `'none'`** : aucune colonne de facturation n'est encore exposée par `app-state`. Le webhook Stripe écrit bien `plan` / `is_active` en base (cf. §10), mais ces valeurs ne transitent **pas encore** par `app-state`.
+
 ### Réservations — `/api/bookings` (`routes/bookings.ts`)
 
 | Méthode | Chemin | Rôle | Auth |
@@ -222,10 +231,10 @@ Toutes les routes sont préfixées par `/api` (sauf `GET /health`). « Auth » i
 | --- | --- | --- | --- |
 | GET | `/` | Créneaux dispos pour une date + couverts | Public |
 | POST | `/validate` | Validation atomique avant réservation | Public |
-| GET | `/next` | Prochaine date disponible (30 j) | Public |
-| POST | `/bookings` | Vérification en lot de plusieurs dates | Public |
+| GET | `/next` | Prochaine date disponible (14 j par défaut, `max_days` paramétrable) | Public |
+| POST | `/bookings` | **Alias déprécié** de création de réservation (délègue à `createBooking`) — conservé pour rétrocompatibilité | Public |
 
-> Le moteur de créneaux appelle la RPC Supabase `get_available_slots(restaurant_id, date, covers)`, qui lit la table **`availability_rules`** — alimentée par le pont décrit au §8.
+> Le moteur de créneaux appelle la RPC Supabase `get_available_slots(p_restaurant_id, p_date, p_covers)`, censée lire la table **`availability_rules`** (alimentée par le pont du §8). ⚠️ **Dépendance externe** : la définition SQL de cette RPC vit dans Supabase et **n'est pas versionnée dans ce dépôt** — son appel est vérifiable côté code, mais son corps ne l'est pas.
 
 ### VAPI (voix) — `/api/vapi` (`routes/vapi.ts`)
 
@@ -284,7 +293,7 @@ Toutes les routes sont préfixées par `/api` (sauf `GET /health`). « Auth » i
 | `/api/restaurants` (`restaurants.ts`) | `PATCH /me/language` | Bearer |
 | `/api/prefill` (`prefill.route.ts`) | `GET /autocomplete` · `GET /details` (Google Places) | Public |
 | `/api/contact` (`contact.ts`) | `POST /` (formulaire de contact) | Public |
-| `/api/customers` (`customers.ts`) | `GET /customers` · `PATCH /:id` · `POST /internal/mark-noshows` | Mixte |
+| `customers.ts` (monté sur `/api`, **pas** `/api/customers`) | `GET /customers` (public) · `PATCH /customers/:id` (Bearer + **scopé restaurant**) · `POST /internal/mark-noshows` (en-tête `INTERNAL_SECRET`) | Mixte |
 
 ## 8. Services & logique métier
 
@@ -337,11 +346,13 @@ Principales tables (Supabase / Postgres) :
 
 **Migrations** (`/migrations/`) : `add_supabase_user_id.sql`, `add_calendar_oauth_columns.sql`, `add_website_notification_prefs.sql`, `restructure_calendar_multi_provider.sql`.
 
+> ⚠️ **Schéma hébergé dans Supabase.** Le dépôt ne contient que ces 4 migrations (des ajouts de colonnes). La création de la plupart des tables ci-dessus (`availability_rules`, `closed_dates`, `restaurant_settings`, `call_logs`, `insights_cache`…) et des RPC (`get_available_slots`, `mark_noshows`…) vit côté Supabase et **n'est pas versionnée ici** : ce modèle est décrit d'après l'usage réel dans le code, mais n'est pas intégralement vérifiable depuis le repo.
+
 ## 10. Intégrations remplaçables
 
 Conçues comme **optionnelles** : `config.ts` valide leurs secrets s'ils sont fournis, mais le serveur démarre sans eux.
 
-- **Stripe** — client initialisé **paresseusement** ; un `STRIPE_SECRET_KEY` manquant ne fait plus planter le serveur au boot. Les routes checkout/webhook renvoient `503` si non configuré. Le backend reste la **source de vérité** de l'état d'abonnement (`plan` / `is_active`), écrit uniquement depuis les événements Stripe (`checkout.session.completed`, `customer.subscription.updated|deleted`). Les URLs de retour sont dérivées de `config.frontendUrl`.
+- **Stripe** — client initialisé **paresseusement** ; un `STRIPE_SECRET_KEY` manquant ne fait plus planter le serveur au boot. Les routes checkout/webhook renvoient `503` si non configuré. Le backend reste la **source de vérité** de l'état d'abonnement (`plan` / `is_active`), écrit uniquement depuis les événements Stripe (`checkout.session.completed`, `customer.subscription.updated|deleted`). Les URLs de retour sont dérivées de `config.frontendUrl`. _Note : ces colonnes sont écrites en base mais pas encore exposées via `GET /auth/app-state` (`subscription.status` y vaut `'none'` en dur — cf. §7)._
 - **HubSpot** — synchro deals/contacts (optionnel).
 - **Pinecone + Gemini/OpenAI (RAG)** — base de connaissances pour l'assistant (optionnel).
 - **Google Places (New API)** — préremplissage des infos restaurant à l'onboarding.
@@ -357,21 +368,33 @@ Les templates prêts à coller sont dans [`supabase/email-templates/`](./supabas
 
 ## 12. Configuration & variables d'environnement
 
-`src/lib/config.ts` centralise et **valide** (Zod) l'intégralité de l'environnement au chargement (fail-fast : une variable requise manquante = serveur qui refuse de démarrer ; secrets ≥ 32 caractères). Voir [`.env.example`](./.env.example) pour la liste complète.
+`src/lib/config.ts` valide via **Zod**, au chargement, un **sous-ensemble** de l'environnement (fail-fast : une variable requise manquante ou invalide = serveur qui refuse de démarrer). Toutes les variables ne passent **pas** par ce schéma : la config serveur et certaines intégrations sont lues directement via `process.env` ailleurs dans le code. Voir [`.env.example`](./.env.example) pour la liste complète.
 
-| Groupe | Variables clés | Requis |
+### Validées par Zod dans `config.ts`
+
+| Groupe | Variables | Requis |
 | --- | --- | --- |
-| Serveur | `PORT`, `NODE_ENV` | oui |
-| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY` | oui |
-| URLs (domaine unique) | `FRONTEND_URL`, `BACKEND_URL` | oui |
-| VAPI | `VAPI_API_KEY`, `VAPI_WEBHOOK_SECRET`, `VAPI_PROVISIONING_MODE` | oui (secret optionnel) |
-| Google | `GOOGLE_CLIENT_ID/SECRET`, `GOOGLE_REDIRECT_URI`, `GOOGLE_PLACES_API_KEY` | oui |
-| E-mail | `SMTP_HOST/PORT/USER/PASS`, `EMAIL_FROM`, `EMAIL_DOMAIN`, `BCC_SECRET` | oui |
-| Auth | `JWT_SECRET`, `INTERNAL_SECRET` | oui |
-| Stripe | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_*`, `STRIPE_WEBHOOK_SECRET` | **optionnel** |
-| RAG / CRM | `PINECONE_*`, `GEMINI_API_KEY`, `HUBSPOT_API_KEY` | optionnel |
+| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY` | **oui** |
+| URLs (domaine unique) | `FRONTEND_URL`, `BACKEND_URL` | **oui** |
+| E-mail | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_DOMAIN` | **oui** |
+| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | **oui** |
+| VAPI | `VAPI_API_KEY` | **oui** |
+| VAPI | `VAPI_PROVISIONING_MODE` | non — `enum('pool','dynamic')`, défaut `pool` |
+| Auth | `JWT_SECRET`, `INTERNAL_SECRET` | **oui** — **seules** variables soumises à `min(32)` |
+| Stripe | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_EN_CAS`, `STRIPE_PRICE_MIAM`, `STRIPE_PRICE_FIN_GOURMET` | optionnel |
+| Secrets webhook | `VAPI_WEBHOOK_SECRET`, `BCC_SECRET` | optionnel |
 
-> ⚠️ Ne jamais committer `.env` (seul `.env.example` est versionné). Tout secret exposé doit être considéré comme compromis et **tourné immédiatement**.
+`config.stripe.isConfigured` ne vaut `true` que si `STRIPE_SECRET_KEY` **et** `STRIPE_WEBHOOK_SECRET` sont présents (sinon les routes Stripe renvoient `503`).
+
+### Lues directement via `process.env` (hors schéma `config.ts`)
+
+Ces variables **ne sont pas validées** par `config.ts` (aucun fail-fast les concernant) ; elles sont consommées à la demande :
+
+- `PORT` (défaut `5000`) et `NODE_ENV` — `server.ts` ;
+- `GOOGLE_PLACES_API_KEY` — préremplissage onboarding (`prefill`) ;
+- `PINECONE_*`, `GEMINI_API_KEY`, `HUBSPOT_API_KEY` — intégrations RAG / CRM optionnelles, lues dans leurs services respectifs.
+
+> ⚠️ **Seuls** `JWT_SECRET` et `INTERNAL_SECRET` imposent une longueur minimale (`min(32)`) ; les autres secrets ne sont contraints qu'à être non vides (`min(1)`). Ne jamais committer `.env` (seul `.env.example` est versionné) ; tout secret exposé doit être considéré comme compromis et **tourné immédiatement**.
 
 ## 13. Déploiement
 
@@ -391,7 +414,8 @@ Jest + `ts-jest` (`jest.config.js`, `src/__tests__/setup.ts` met `LOG_LEVEL=sile
 | `middleware/validation.test.ts` | Middleware de validation Zod |
 | `voice/*.test.ts` | Orchestration de réservation, fiabilité, validation du payload VAPI |
 | `webhooks/vapi.webhook.test.ts` | HMAC + parsing du webhook VAPI |
-| `endpoints/bookings.test.ts` | `POST /bookings`, `GET /list`, `DELETE /:id` |
+| `endpoints/bookings.test.ts` | Validation des payloads de réservation (`POST /bookings`) |
+| `endpoints/customers.test.ts` | `PATCH /customers/:id` : rejet sans token / token invalide / accès cross-restaurant, succès légitime |
 
 ```bash
 npm test            # tout
