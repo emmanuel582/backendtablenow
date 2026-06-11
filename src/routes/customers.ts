@@ -61,8 +61,12 @@ router.get('/customers', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 // PATCH /api/customers/:id
 // Mettre à jour allergies, préférences, notes
+// 🔒 Auth requise + scoping restaurant : un restaurant ne peut modifier que SES
+//    clients. Un client d'un autre restaurant ne matche aucune ligne → 404 (pas
+//    d'écriture cross-tenant, pas de fuite d'existence).
 // ─────────────────────────────────────────────
-router.patch('/customers/:id', async (req: Request, res: Response) => {
+router.patch('/customers/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+    const restaurantId = req.user!.restaurantId;
     const { name, email, allergies, preferences, notes } = req.body;
 
     const updates: Record<string, unknown> = {};
@@ -72,14 +76,22 @@ router.patch('/customers/:id', async (req: Request, res: Response) => {
     if (preferences !== undefined) updates.preferences = preferences;
     if (notes !== undefined)       updates.notes = notes;
 
+    if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'Aucun champ modifiable fourni' });
+    }
+
+    // L'update est borné au restaurant authentifié (filtre restaurant_id) : un
+    // client appartenant à un autre restaurant ne matche aucune ligne.
     const { data, error } = await supabase
         .from('customers')
         .update(updates)
         .eq('id', req.params.id)
+        .eq('restaurant_id', restaurantId)
         .select()
-        .single();
+        .maybeSingle();
 
     if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Client introuvable' });
     res.json(data);
 });
 
