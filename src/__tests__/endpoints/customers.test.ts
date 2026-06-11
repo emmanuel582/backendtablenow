@@ -161,33 +161,6 @@ describe('PATCH /api/customers/:id — auth + scoping restaurant', () => {
     });
 });
 
-describe('DELETE /api/bookings/:id (router customers) — auth + scoping restaurant', () => {
-    it('sans token → 401', async () => {
-        const res = await request(app).delete('/api/bookings/bk-1');
-        expect(res.status).toBe(401);
-    });
-
-    it('réservation d\'un AUTRE restaurant → 404 (pré-check borné à resto-A)', async () => {
-        authOk();
-        supa.__setTable('bookings', null);
-        const res = await request(app)
-            .delete('/api/bookings/bk-of-B')
-            .set('Authorization', 'Bearer valid');
-        expect(res.status).toBe(404);
-        expect(supa.__eqCalls('bookings')).toContainEqual(['restaurant_id', 'resto-A']);
-    });
-
-    it('annulation légitime → 200', async () => {
-        authOk();
-        supa.__setTable('bookings', { id: 'bk-1', restaurant_id: 'resto-A', status: 'cancelled' });
-        const res = await request(app)
-            .delete('/api/bookings/bk-1')
-            .set('Authorization', 'Bearer valid');
-        expect(res.status).toBe(200);
-        expect(res.body.booking).toEqual({ id: 'bk-1', restaurant_id: 'resto-A', status: 'cancelled' });
-    });
-});
-
 describe('POST /api/internal/mark-noshows — protégé par INTERNAL_SECRET (non public)', () => {
     const SECRET = 'test-internal-secret-aaaaaaaaaaaaaaaaaaaa';
     beforeEach(() => { process.env.INTERNAL_SECRET = SECRET; });

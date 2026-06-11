@@ -6,38 +6,6 @@ import supabase from '../config/supabase';
 const router = Router();
 
 // ─────────────────────────────────────────────
-// DELETE /api/bookings/:id
-// Soft delete — status = cancelled
-// 🔒 Requires authentication
-// ─────────────────────────────────────────────
-router.delete('/bookings/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
-    const restaurantId = req.user!.restaurantId;
-
-    // Ensure the booking belongs to the authenticated restaurant
-    const { data: existing, error: findError } = await supabase
-        .from('bookings')
-        .select('id')
-        .eq('id', req.params.id)
-        .eq('restaurant_id', restaurantId)
-        .single();
-
-    if (findError || !existing) {
-        return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    const { data, error } = await supabase
-        .from('bookings')
-        .update({ status: 'cancelled' })
-        .eq('id', req.params.id)
-        .eq('restaurant_id', restaurantId)
-        .select()
-        .single();
-
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ message: 'Réservation annulée', booking: data });
-});
-
-// ─────────────────────────────────────────────
 // GET /api/customers?phone=+336...
 // Profil complet d'un convive + historique
 // 🔒 Auth requise + scoping restaurant : le restaurant_id vient du token
