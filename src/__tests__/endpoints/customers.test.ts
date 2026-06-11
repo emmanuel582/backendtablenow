@@ -4,20 +4,29 @@ import customersRouter from '../../routes/customers';
 
 // ── Mock du module Supabase (client par défaut + getUserFromToken) ────────────
 // from(table) renvoie un builder chaînable ; single()/maybeSingle() résolvent la
-// réponse câblée pour cette table via __setTable. Comme le vrai config/supabase
-// throw si l'env est absent, le mocker évite aussi tout accès réseau/secret.
+// réponse câblée pour cette table via __setTable, et chaque .eq(col,val) est
+// enregistré par table (__eqCalls) pour prouver le scoping. Mocker le module évite
+// aussi que le vrai config/supabase throw (env absent) ou accède au réseau.
 jest.mock('../../config/supabase', () => {
     const mockResponses: Record<string, { data: any; error: any }> = {};
+    const mockEqCalls: Record<string, Array<[string, any]>> = {};
     const makeBuilder = (table: string) => {
         const resolve = () => Promise.resolve(mockResponses[table] ?? { data: null, error: null });
         const builder: any = {};
-        ['select', 'update', 'insert', 'delete', 'eq', 'order', 'range', 'or', 'gte', 'lte', 'match']
+        ['select', 'update', 'insert', 'delete', 'order', 'range', 'or', 'gte', 'lte', 'match']
             .forEach((m) => { builder[m] = jest.fn(() => builder); });
+        builder.eq = jest.fn((col: string, val: any) => {
+            (mockEqCalls[table] ||= []).push([col, val]);
+            return builder;
+        });
         builder.single = jest.fn(resolve);
         builder.maybeSingle = jest.fn(resolve);
         return builder;
     };
-    const supabase = { from: jest.fn((t: string) => makeBuilder(t)) };
+    const supabase = {
+        from: jest.fn((t: string) => makeBuilder(t)),
+        rpc: jest.fn(() => Promise.resolve({ data: 0, error: null })),
+    };
     return {
         __esModule: true,
         default: supabase,
@@ -25,11 +34,16 @@ jest.mock('../../config/supabase', () => {
         getUserFromToken: jest.fn(),
         // Helpers de test uniquement (absents du module réel)
         __setTable: (t: string, data: any, error: any = null) => { mockResponses[t] = { data, error }; },
-        __reset: () => { Object.keys(mockResponses).forEach((k) => delete mockResponses[k]); },
+        __eqCalls: (t: string) => mockEqCalls[t] || [],
+        __reset: () => {
+            Object.keys(mockResponses).forEach((k) => delete mockResponses[k]);
+            Object.keys(mockEqCalls).forEach((k) => delete mockEqCalls[k]);
+        },
     };
 });
 
 const supa = jest.requireMock('../../config/supabase') as any;
+const supabaseMock = supa.supabase as any;
 const getUserFromToken = supa.getUserFromToken as jest.Mock;
 
 const app = express();
@@ -41,15 +55,67 @@ const CONFIRMED_USER = {
     email: 'owner@resto-a.fr',
     email_confirmed_at: '2026-06-01T00:00:00Z',
 };
+const RESTO_A = { id: 'resto-A', email: 'owner@resto-a.fr' };
+
+// Authentifie l'utilisateur et résout SON restaurant (resto-A) côté middleware.
+function authOk() {
+    getUserFromToken.mockResolvedValue(CONFIRMED_USER);
+    supa.__setTable('restaurants', RESTO_A);
+}
 
 beforeEach(() => {
     supa.__reset();
     getUserFromToken.mockReset();
+    supabaseMock.rpc.mockClear();
+    supabaseMock.rpc.mockResolvedValue({ data: 0, error: null });
 });
 
-describe('PATCH /api/customers/:id — authentification + scoping restaurant', () => {
-    it('sans token → 401 (et la validation du token n\'est même pas tentée)', async () => {
-        const res = await request(app).patch('/api/customers/cust-1').send({ name: 'Hacker' });
+describe('GET /api/customers — auth + scoping restaurant', () => {
+    it('sans token → 401 (validation du token non tentée)', async () => {
+        const res = await request(app).get('/api/customers?phone=%2B33600000000');
+        expect(res.status).toBe(401);
+        expect(getUserFromToken).not.toHaveBeenCalled();
+    });
+
+    it('token invalide → 403', async () => {
+        getUserFromToken.mockResolvedValue(null);
+        const res = await request(app)
+            .get('/api/customers?phone=%2B33600000000')
+            .set('Authorization', 'Bearer invalid');
+        expect(res.status).toBe(403);
+    });
+
+    it('scope au restaurant du token et IGNORE le restaurant_id injecté en query', async () => {
+        authOk();
+        supa.__setTable('customers', {
+            id: 'cust-1', restaurant_id: 'resto-A', phone: '+33600000000', name: 'Alice', bookings: [],
+        });
+        // L'attaquant tente d'injecter resto-B dans la query
+        const res = await request(app)
+            .get('/api/customers?phone=%2B33600000000&restaurant_id=resto-B')
+            .set('Authorization', 'Bearer valid');
+        expect(res.status).toBe(200);
+        // Preuve du scoping : la requête customers a filtré sur resto-A (token), jamais resto-B (query)
+        const eqs = supa.__eqCalls('customers');
+        expect(eqs).toContainEqual(['restaurant_id', 'resto-A']);
+        expect(eqs).not.toContainEqual(['restaurant_id', 'resto-B']);
+        // Aucune donnée d'un autre restaurant dans la réponse
+        expect(res.body.restaurant_id).toBe('resto-A');
+    });
+
+    it('client inexistant pour ce restaurant → 404', async () => {
+        authOk();
+        supa.__setTable('customers', null);
+        const res = await request(app)
+            .get('/api/customers?phone=%2B33699999999')
+            .set('Authorization', 'Bearer valid');
+        expect(res.status).toBe(404);
+    });
+});
+
+describe('PATCH /api/customers/:id — auth + scoping restaurant', () => {
+    it('sans token → 401', async () => {
+        const res = await request(app).patch('/api/customers/cust-1').send({ name: 'X' });
         expect(res.status).toBe(401);
         expect(getUserFromToken).not.toHaveBeenCalled();
     });
@@ -58,43 +124,93 @@ describe('PATCH /api/customers/:id — authentification + scoping restaurant', (
         getUserFromToken.mockResolvedValue(null);
         const res = await request(app)
             .patch('/api/customers/cust-1')
-            .set('Authorization', 'Bearer invalid-token')
-            .send({ name: 'Hacker' });
+            .set('Authorization', 'Bearer invalid')
+            .send({ name: 'X' });
         expect(res.status).toBe(403);
     });
 
-    it('client d\'un AUTRE restaurant → 404 (pas d\'écriture cross-tenant, pas de fuite)', async () => {
-        getUserFromToken.mockResolvedValue(CONFIRMED_USER);
-        // Auth → resout le restaurant de l'utilisateur (resto-A)
-        supa.__setTable('restaurants', { id: 'resto-A', email: 'owner@resto-a.fr' });
-        // L'update borné à resto-A ne matche aucune ligne (le client appartient à resto-B)
-        supa.__setTable('customers', null);
+    it('client d\'un AUTRE restaurant → 404 ; l\'update est borné à resto-A', async () => {
+        authOk();
+        supa.__setTable('customers', null); // update borné resto-A ne matche aucune ligne
         const res = await request(app)
-            .patch('/api/customers/cust-belongs-to-B')
-            .set('Authorization', 'Bearer valid-token')
+            .patch('/api/customers/cust-of-B')
+            .set('Authorization', 'Bearer valid')
             .send({ notes: 'tentative cross-tenant' });
         expect(res.status).toBe(404);
+        expect(supa.__eqCalls('customers')).toContainEqual(['restaurant_id', 'resto-A']);
     });
 
-    it('accès légitime (client du restaurant) → 200 + ligne mise à jour', async () => {
-        getUserFromToken.mockResolvedValue(CONFIRMED_USER);
-        supa.__setTable('restaurants', { id: 'resto-A', email: 'owner@resto-a.fr' });
+    it('accès légitime → 200 + ligne mise à jour', async () => {
+        authOk();
         supa.__setTable('customers', { id: 'cust-1', restaurant_id: 'resto-A', name: 'Nouveau Nom' });
         const res = await request(app)
             .patch('/api/customers/cust-1')
-            .set('Authorization', 'Bearer valid-token')
+            .set('Authorization', 'Bearer valid')
             .send({ name: 'Nouveau Nom' });
         expect(res.status).toBe(200);
         expect(res.body).toEqual({ id: 'cust-1', restaurant_id: 'resto-A', name: 'Nouveau Nom' });
     });
 
     it('authentifié mais aucun champ modifiable → 400', async () => {
-        getUserFromToken.mockResolvedValue(CONFIRMED_USER);
-        supa.__setTable('restaurants', { id: 'resto-A', email: 'owner@resto-a.fr' });
+        authOk();
         const res = await request(app)
             .patch('/api/customers/cust-1')
-            .set('Authorization', 'Bearer valid-token')
+            .set('Authorization', 'Bearer valid')
             .send({ unknown_field: 'ignoré' });
         expect(res.status).toBe(400);
+    });
+});
+
+describe('DELETE /api/bookings/:id (router customers) — auth + scoping restaurant', () => {
+    it('sans token → 401', async () => {
+        const res = await request(app).delete('/api/bookings/bk-1');
+        expect(res.status).toBe(401);
+    });
+
+    it('réservation d\'un AUTRE restaurant → 404 (pré-check borné à resto-A)', async () => {
+        authOk();
+        supa.__setTable('bookings', null);
+        const res = await request(app)
+            .delete('/api/bookings/bk-of-B')
+            .set('Authorization', 'Bearer valid');
+        expect(res.status).toBe(404);
+        expect(supa.__eqCalls('bookings')).toContainEqual(['restaurant_id', 'resto-A']);
+    });
+
+    it('annulation légitime → 200', async () => {
+        authOk();
+        supa.__setTable('bookings', { id: 'bk-1', restaurant_id: 'resto-A', status: 'cancelled' });
+        const res = await request(app)
+            .delete('/api/bookings/bk-1')
+            .set('Authorization', 'Bearer valid');
+        expect(res.status).toBe(200);
+        expect(res.body.booking).toEqual({ id: 'bk-1', restaurant_id: 'resto-A', status: 'cancelled' });
+    });
+});
+
+describe('POST /api/internal/mark-noshows — protégé par INTERNAL_SECRET (non public)', () => {
+    const SECRET = 'test-internal-secret-aaaaaaaaaaaaaaaaaaaa';
+    beforeEach(() => { process.env.INTERNAL_SECRET = SECRET; });
+    afterEach(() => { delete process.env.INTERNAL_SECRET; });
+
+    it('sans secret → 401', async () => {
+        const res = await request(app).post('/api/internal/mark-noshows');
+        expect(res.status).toBe(401);
+    });
+
+    it('mauvais secret → 401', async () => {
+        const res = await request(app)
+            .post('/api/internal/mark-noshows')
+            .set('x-internal-secret', 'wrong');
+        expect(res.status).toBe(401);
+    });
+
+    it('secret valide → 200', async () => {
+        supabaseMock.rpc.mockResolvedValueOnce({ data: 4, error: null });
+        const res = await request(app)
+            .post('/api/internal/mark-noshows')
+            .set('x-internal-secret', SECRET);
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ marked: 4 });
     });
 });

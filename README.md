@@ -293,7 +293,7 @@ Toutes les routes sont préfixées par `/api` (sauf `GET /health`). « Auth » i
 | `/api/restaurants` (`restaurants.ts`) | `PATCH /me/language` | Bearer |
 | `/api/prefill` (`prefill.route.ts`) | `GET /autocomplete` · `GET /details` (Google Places) | Public |
 | `/api/contact` (`contact.ts`) | `POST /` (formulaire de contact) | Public |
-| `customers.ts` (monté sur `/api`, **pas** `/api/customers`) | `GET /customers` (public) · `PATCH /customers/:id` (Bearer + **scopé restaurant**) · `POST /internal/mark-noshows` (en-tête `INTERNAL_SECRET`) | Mixte |
+| `customers.ts` (monté sur `/api`, **pas** `/api/customers`) | `GET /customers` (Bearer + **scopé restaurant**) · `PATCH /customers/:id` (Bearer + **scopé restaurant**) · `DELETE /bookings/:id` (Bearer + scopé ; doublon masqué en prod par `bookings.ts`) · `POST /internal/mark-noshows` (en-tête `INTERNAL_SECRET`) | Bearer / secret interne |
 
 ## 8. Services & logique métier
 
@@ -415,7 +415,7 @@ Jest + `ts-jest` (`jest.config.js`, `src/__tests__/setup.ts` met `LOG_LEVEL=sile
 | `voice/*.test.ts` | Orchestration de réservation, fiabilité, validation du payload VAPI |
 | `webhooks/vapi.webhook.test.ts` | HMAC + parsing du webhook VAPI |
 | `endpoints/bookings.test.ts` | Validation des payloads de réservation (`POST /bookings`) |
-| `endpoints/customers.test.ts` | `PATCH /customers/:id` : rejet sans token / token invalide / accès cross-restaurant, succès légitime |
+| `endpoints/customers.test.ts` | Router `customers` (`GET /customers`, `PATCH /customers/:id`, `DELETE /bookings/:id`) : rejet sans token / token invalide, scoping `restaurant_id` (lecture **et** écriture, `restaurant_id` de la query ignoré, pas de cross-restaurant), succès légitime ; `mark-noshows` exige le secret interne |
 
 ```bash
 npm test            # tout

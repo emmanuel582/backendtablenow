@@ -29,6 +29,7 @@ router.delete('/bookings/:id', authenticateToken, async (req: AuthRequest, res: 
         .from('bookings')
         .update({ status: 'cancelled' })
         .eq('id', req.params.id)
+        .eq('restaurant_id', restaurantId)
         .select()
         .single();
 
@@ -37,24 +38,28 @@ router.delete('/bookings/:id', authenticateToken, async (req: AuthRequest, res: 
 });
 
 // ─────────────────────────────────────────────
-// GET /api/customers?phone=+336...&restaurant_id=...
+// GET /api/customers?phone=+336...
 // Profil complet d'un convive + historique
+// 🔒 Auth requise + scoping restaurant : le restaurant_id vient du token
+//    (jamais de la query) — impossible de lire les clients d'un autre restaurant.
 // ─────────────────────────────────────────────
-router.get('/customers', async (req: Request, res: Response) => {
-    const { phone, restaurant_id } = req.query as { phone?: string; restaurant_id?: string };
+router.get('/customers', authenticateToken, async (req: AuthRequest, res: Response) => {
+    const restaurantId = req.user!.restaurantId;
+    const { phone } = req.query as { phone?: string };
 
-    if (!phone || !restaurant_id) {
-        return res.status(400).json({ error: 'Paramètres phone et restaurant_id requis' });
+    if (!phone) {
+        return res.status(400).json({ error: 'Paramètre phone requis' });
     }
 
     const { data, error } = await supabase
         .from('customers')
         .select('*, bookings(*)')
         .eq('phone', phone)
-        .eq('restaurant_id', restaurant_id)
-        .single();
+        .eq('restaurant_id', restaurantId)
+        .maybeSingle();
 
-    if (error || !data) return res.status(404).json({ error: 'Client introuvable' });
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Client introuvable' });
     res.json(data);
 });
 
