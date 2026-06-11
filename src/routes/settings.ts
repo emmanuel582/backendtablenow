@@ -4,6 +4,11 @@ import supabase from '../config/supabase';
 import vapiService from '../services/vapi.service';
 import provisioningService from '../services/provisioning.service';
 import { syncAvailabilityRules } from '../services/availability.service';
+import {
+    capacityFromOpeningHours,
+    extractServiceTypesFromOpeningHours,
+    DEFAULT_SERVICE_TYPES,
+} from '../lib/restaurant.utils';
 import logger from '../lib/logger';
 
 const router = Router();
@@ -39,10 +44,29 @@ router.put('/', async (req: AuthRequest, res: Response) => {
 
         const updates: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(req.body)) {
-            if (SETTINGS_ALLOWLIST.has(key)) updates[key] = value;
+            if (!SETTINGS_ALLOWLIST.has(key)) continue;
+            // Ignore empty optional strings (e.g. website left blank during onboarding)
+            if (typeof value === 'string' && value.trim() === '' && key !== 'name' && key !== 'owner_name' && key !== 'address' && key !== 'phone') {
+                continue;
+            }
+            updates[key] = value;
         }
         if (Object.keys(updates).length === 0) {
             return res.status(400).json({ error: 'No valid fields to update' });
+        }
+
+        if ('opening_hours' in updates) {
+            const oh = updates.opening_hours;
+            const existing = req.restaurant;
+            updates.capacity = capacityFromOpeningHours(
+                oh as Parameters<typeof capacityFromOpeningHours>[0],
+                (existing?.capacity as number) || 50
+            );
+            updates.max_covers = updates.capacity;
+            updates.services = extractServiceTypesFromOpeningHours(
+                oh as Parameters<typeof extractServiceTypesFromOpeningHours>[0],
+                (existing?.services as string[]) || DEFAULT_SERVICE_TYPES
+            );
         }
 
         const { data: restaurant, error } = await supabase
@@ -52,8 +76,6 @@ router.put('/', async (req: AuthRequest, res: Response) => {
             return res.status(500).json({ error: 'Failed to update settings' });
         }
 
-        // Pont horaires -> moteur de créneaux : si les horaires changent, on régénère
-        // availability_rules (sinon l'IA ne voit jamais de disponibilité).
         if ('opening_hours' in updates) {
             try {
                 await syncAvailabilityRules(restaurantId);

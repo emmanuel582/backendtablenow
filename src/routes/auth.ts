@@ -12,6 +12,7 @@ import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { resolveNextRoute, type UserContext } from '../lib/routing';
 import { validate } from '../middleware/handlers';
 import { AuthGoogleSchema } from '../schemas/authGoogleSchema';
+import { isRestaurantProfileComplete } from '../lib/restaurant.utils';
 
 const router = Router();
 
@@ -218,9 +219,11 @@ router.post('/google/supabase', validate(AuthGoogleSchema), async (req: Request,
         }
 
         const { password: _pw, verification_token: _vt, google_calendar_tokens: _gct, ...safeRest } = restaurant as any;
+        const needs_onboarding = !isRestaurantProfileComplete(restaurant);
         res.json({
             restaurant: safeRest,
             is_new_user: isNewUser,
+            needs_onboarding,
             google_profile: { email, name: googleName, photo: googlePhoto },
         });
     } catch (err: any) {
@@ -256,13 +259,7 @@ async function getUserContextWithNextRoute(req: AuthRequest, res: Response) {
       : (restaurant?.plan || 'none');
     const onboardingStatus = restaurant?.setup_complete ? 'complete' : 'not_started';
 
-    const is_complete = !!(
-      restaurant &&
-      restaurant.name &&
-      restaurant.owner_name &&
-      restaurant.address &&
-      restaurant.phone
-    );
+    const is_complete = isRestaurantProfileComplete(restaurant);
 
     const ctx: UserContext = {
       user: { id: userId, email: req.user?.email || '' },

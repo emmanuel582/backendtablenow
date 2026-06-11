@@ -2,6 +2,11 @@ import { Router, Request, Response } from 'express';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import supabase from '../config/supabase';
 import { normalizeBooking } from '../services/booking.service';
+import {
+    capacityFromOpeningHours,
+    capacityForDayIndex,
+    uiDayIndexForDate,
+} from '../lib/restaurant.utils';
 import { DatabaseError } from '../lib/errors';
 import logger from '../lib/logger';
 import { config } from '../lib/config';
@@ -34,7 +39,11 @@ router.post('/insights/refresh', async (req: Request, res: Response) => {
         for (const restaurant of (restaurants || [])) {
             try {
                 const rid = restaurant.id;
-                const totalCapacity = restaurant.capacity || 40;
+                const totalCapacity = capacityForDayIndex(
+                    restaurant.opening_hours,
+                    uiDayIndexForDate(new Date()),
+                    capacityFromOpeningHours(restaurant.opening_hours, restaurant.capacity || 50)
+                );
 
                 // Confirmed bookings today
                 const { data: todayBookings } = await supabase
@@ -208,7 +217,11 @@ router.get('/insights', async (req: AuthRequest, res: Response, next) => {
 
         if (rErr) throw new DatabaseError('Failed to fetch restaurant', rErr);
 
-        const totalCapacity = restaurant?.capacity || 40;
+        const totalCapacity = capacityForDayIndex(
+            restaurant?.opening_hours,
+            uiDayIndexForDate(new Date()),
+            capacityFromOpeningHours(restaurant?.opening_hours, restaurant?.capacity || 50)
+        );
 
         const { data: todayBookings, error: bErr } = await supabase
             .from('bookings')

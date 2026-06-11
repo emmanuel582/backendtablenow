@@ -27,6 +27,7 @@ import prefillRouter    from './routes/prefill.route';
 import contactRoutes    from './routes/contact';
 import stripeRoutes     from './routes/stripe';
 import referralRoutes from './routes/referral';
+import demoRoutes from './routes/demo';
 import { checkTrialEmails } from './cron/trialEmails';
 
 const app: Application = express();
@@ -93,6 +94,7 @@ app.use('/api/restaurants',  restaurantsRoutes);
 app.use('/api/contact',      contactRoutes);
 app.use('/api/stripe',       stripeRoutes);
 app.use('/api/referral', referralRoutes);
+app.use('/api/demo', demoRoutes);
 app.use(prefillRouter);
 
 // ── 404 ─────────────────────────────────────────────────────────────────────────────────────────
