@@ -11,19 +11,87 @@ import { BootstrapSchema } from '../schemas';
 
 const router = Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TableNow uses ONE authentication chain: Supabase Auth.
-//   - Google OAuth, email/password, password reset and email confirmation all
-//     happen client-side via supabase-js and yield a Supabase access_token.
-//   - Every protected route validates that Supabase token (middleware/auth.ts).
-//   - POST /auth/bootstrap turns a session into a linked restaurant.
-//   - GET  /auth/app-state returns the routing/permission context.
-//
-// The legacy bcrypt + homemade-JWT endpoints (/register, /login, /verify-email,
-// /google, /google/callback) were removed: they issued tokens the Supabase-only
-// middleware rejected, which left users "logged in" but unable to call any
-// protected route. Do not reintroduce a parallel auth path.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── POST /auth/register ────────────────────────────────────────────────────────
+// Creates a Supabase Auth user + restaurant row in one shot. The frontend then
+// calls signInWithPassword to establish a session. This is the primary signup
+// path for email/password registration.
+router.post('/register', async (req: Request, res: Response) => {
+    try {
+        const {
+            email, password, restaurantName, ownerName,
+            phone, address, cuisineType, website,
+            lat, lng, google_place_id, google_maps_url, opening_hours_google,
+        } = req.body;
+
+        if (!email || !password || !restaurantName || !ownerName) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const { data: existingUser } = await supabase
+            .from('restaurants').select('id').eq('email', email).maybeSingle();
+        if (existingUser) return res.status(409).json({ error: 'Email already registered' });
+
+        const { data: created, error: createErr } = await supabase.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: { full_name: ownerName },
+        });
+        if (createErr || !created?.user) {
+            const msg = createErr?.message || '';
+            if (/already|exists|registered/i.test(msg)) {
+                return res.status(409).json({ error: 'Email already registered' });
+            }
+            logger.error({ err: msg }, 'Supabase admin.createUser failed');
+            return res.status(500).json({ error: 'Failed to create account' });
+        }
+        const supabaseUserId = created.user.id;
+
+        let slug = generateUniqueSlug(restaurantName);
+        const { data: slugTaken } = await supabase
+            .from('restaurants').select('id').eq('slug', slug).maybeSingle();
+        if (slugTaken) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
+
+        const insertPayload: Record<string, unknown> = {
+            supabase_user_id: supabaseUserId,
+            email, name: restaurantName, owner_name: ownerName,
+            phone: phone || null, address: address || null,
+            cuisine_type: cuisineType || null, website: website || null,
+            is_verified: true, status: 'provisioning', slug,
+        };
+        if (lat != null) insertPayload.lat = lat;
+        if (lng != null) insertPayload.lng = lng;
+        if (google_place_id) insertPayload.google_place_id = google_place_id;
+        if (google_maps_url) insertPayload.google_maps_url = google_maps_url;
+        if (opening_hours_google) insertPayload.opening_hours_google = opening_hours_google;
+
+        const { data: restaurant, error: dbError } = await supabase
+            .from('restaurants')
+            .insert(insertPayload)
+            .select()
+            .single();
+
+        if (dbError || !restaurant) {
+            logger.error({ dbError }, 'Registration DB error');
+            await supabase.auth.admin.deleteUser(supabaseUserId).catch(() => {});
+            return res.status(500).json({ error: 'Failed to create account' });
+        }
+
+        setImmediate(async () => {
+            try {
+                await provisioningService.provision(restaurant);
+            } catch (vapiErr) {
+                logger.error({ vapiErr }, 'VAPI provisioning error (register)');
+                await supabase.from('restaurants').update({ status: 'error' }).eq('id', restaurant.id);
+            }
+        });
+
+        res.status(201).json({ message: 'Account created successfully.', restaurantId: restaurant.id });
+    } catch (error: any) {
+        logger.error({ error }, 'Registration error');
+        res.status(500).json({ error: 'Registration failed' });
+    }
+});
 
 // ── POST /auth/bootstrap ───────────────────────────────────────────────────────
 // Provider-agnostic: takes the authenticated Supabase session and ensures a
