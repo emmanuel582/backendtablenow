@@ -116,14 +116,16 @@ app.use((req: Request, res: Response) => {
 // ── Unified error handler (must be last) ────────────────────────────────────────────────────────
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-    logger.info({ port: PORT, env: process.env.NODE_ENV, url: process.env.BACKEND_URL }, '🚀 TableNow API started');
-});
+// Vercel sets VERCEL=1 — skip listen() and cron in serverless mode.
+if (!process.env.VERCEL) {
+    app.listen(PORT, () => {
+        logger.info({ port: PORT, env: process.env.NODE_ENV, url: process.env.BACKEND_URL }, '🚀 TableNow API started');
+    });
 
-// ── Trial email cron (runs in-process, every hour) ────────────────────────────────────────────────
-checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron startup error'));
-setInterval(() => {
-    checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron error'));
-}, 60 * 60 * 1000);
+    checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron startup error'));
+    setInterval(() => {
+        checkTrialEmails().catch(err => logger.error({ action: 'trial_email_cron', error: err.message }, 'Trial email cron error'));
+    }, 60 * 60 * 1000);
+}
 
 export default app;
