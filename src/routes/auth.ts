@@ -143,6 +143,47 @@ router.post('/verify-email', async (req: Request, res: Response) => {
     }
 });
 
+// ── POST /auth/resend-verification ─────────────────────────────────────────────
+// Re-generates a verification token and re-sends the custom branded email.
+// Rate-limited by caller; no auth required (pre-login flow).
+router.post('/resend-verification', async (req: Request, res: Response) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required' });
+
+    try {
+        const { data: restaurant, error } = await supabase
+            .from('restaurants')
+            .select('id, name, is_verified')
+            .eq('email', email)
+            .maybeSingle();
+
+        if (error || !restaurant) {
+            // Don't reveal whether the account exists
+            return res.json({ message: 'If that email is registered, a new link has been sent.' });
+        }
+        if (restaurant.is_verified) {
+            return res.json({ message: 'If that email is registered, a new link has been sent.' });
+        }
+
+        const newToken = uuidv4();
+        await supabase
+            .from('restaurants')
+            .update({ verification_token: newToken })
+            .eq('id', restaurant.id);
+
+        try {
+            await emailService.sendVerificationEmail(email, newToken, restaurant.name || 'Your restaurant');
+        } catch (emailErr) {
+            logger.error({ emailErr }, 'Resend verification email failed');
+        }
+
+        res.json({ message: 'If that email is registered, a new link has been sent.' });
+    } catch (err: any) {
+        logger.error({ err: err?.message }, 'Resend verification error');
+        res.status(500).json({ error: 'Failed to resend' });
+    }
+});
+
 // ── POST /auth/bootstrap ───────────────────────────────────────────────────────
 // Provider-agnostic: takes the authenticated Supabase session and ensures a
 // restaurant exists for the user. Idempotent — links an existing restaurant by
