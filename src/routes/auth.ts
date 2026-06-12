@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import supabase, { getUserFromToken } from '../config/supabase';
 import logger from '../lib/logger';
 import provisioningService from '../services/provisioning.service';
+import emailService from '../services/email.service';
 import { generateUniqueSlug } from '../lib/supabase.utils';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { resolveNextRoute } from '../lib/routing';
@@ -12,9 +14,8 @@ import { BootstrapSchema } from '../schemas';
 const router = Router();
 
 // ── POST /auth/register ────────────────────────────────────────────────────────
-// Creates a Supabase Auth user + restaurant row in one shot. The frontend then
-// calls signInWithPassword to establish a session. This is the primary signup
-// path for email/password registration.
+// Creates a Supabase Auth user (unconfirmed) + restaurant row + sends our custom
+// verification email. The user must click the link before they can log in.
 router.post('/register', async (req: Request, res: Response) => {
     try {
         const {
@@ -34,7 +35,7 @@ router.post('/register', async (req: Request, res: Response) => {
         const { data: created, error: createErr } = await supabase.auth.admin.createUser({
             email,
             password,
-            email_confirm: true,
+            email_confirm: false,
             user_metadata: { full_name: ownerName },
         });
         if (createErr || !created?.user) {
@@ -52,12 +53,15 @@ router.post('/register', async (req: Request, res: Response) => {
             .from('restaurants').select('id').eq('slug', slug).maybeSingle();
         if (slugTaken) slug = `${slug}-${Date.now().toString(36).slice(-6)}`;
 
+        const verificationToken = uuidv4();
+
         const insertPayload: Record<string, unknown> = {
             supabase_user_id: supabaseUserId,
             email, name: restaurantName, owner_name: ownerName,
             phone: phone || null, address: address || null,
             cuisine_type: cuisineType || null, website: website || null,
-            is_verified: true, status: 'provisioning', slug,
+            is_verified: false, status: 'provisioning', slug,
+            verification_token: verificationToken,
         };
         if (lat != null) insertPayload.lat = lat;
         if (lng != null) insertPayload.lng = lng;
@@ -77,6 +81,14 @@ router.post('/register', async (req: Request, res: Response) => {
             return res.status(500).json({ error: 'Failed to create account' });
         }
 
+        // Send our custom verification email (matches the mockup design)
+        try {
+            await emailService.sendVerificationEmail(email, verificationToken, restaurantName);
+        } catch (emailErr) {
+            logger.error({ emailErr }, 'Verification email failed (non-blocking)');
+        }
+
+        // VAPI provisioning in background
         setImmediate(async () => {
             try {
                 await provisioningService.provision(restaurant);
@@ -90,6 +102,44 @@ router.post('/register', async (req: Request, res: Response) => {
     } catch (error: any) {
         logger.error({ error }, 'Registration error');
         res.status(500).json({ error: 'Registration failed' });
+    }
+});
+
+// ── POST /auth/verify-email ────────────────────────────────────────────────────
+// Clicked from the verification email link. Confirms the Supabase Auth user so
+// they can sign in, marks the restaurant verified, then redirects to login.
+router.post('/verify-email', async (req: Request, res: Response) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token required' });
+
+    try {
+        const { data: restaurant, error } = await supabase
+            .from('restaurants')
+            .select('id, supabase_user_id')
+            .eq('verification_token', token)
+            .maybeSingle();
+
+        if (error || !restaurant) {
+            return res.status(404).json({ error: 'Invalid or expired token' });
+        }
+
+        // Confirm the Supabase Auth user so signInWithPassword works
+        if (restaurant.supabase_user_id) {
+            await supabase.auth.admin.updateUserById(restaurant.supabase_user_id, {
+                email_confirm: true,
+            });
+        }
+
+        // Mark restaurant as verified and clear the token
+        await supabase
+            .from('restaurants')
+            .update({ is_verified: true, verification_token: null })
+            .eq('id', restaurant.id);
+
+        res.json({ message: 'Email verified successfully' });
+    } catch (err: any) {
+        logger.error({ err: err?.message }, 'Email verification error');
+        res.status(500).json({ error: 'Verification failed' });
     }
 });
 
