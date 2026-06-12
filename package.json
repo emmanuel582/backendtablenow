@@ -12,9 +12,7 @@
         "setup-db": "ts-node src/scripts/setupDatabase.ts",
         "test": "jest",
         "test:watch": "jest --watch",
-        "test:coverage": "jest --coverage",
-        "heroku-prebuild": "npm install",
-        "heroku-postbuild": "npm run build"
+        "test:coverage": "jest --coverage"
     },
     "keywords": [
         "restaurant",

@@ -1,0 +1,61 @@
+name: Deploy to VPS
+
+# Auto-deploy the backend to the VPS on every push to main (or manual run).
+# The GitHub-hosted runner SSHes into the VPS and runs deploy.sh, which pulls
+# remote main, installs deps, rebuilds dist/, and restarts the pm2 process.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST      — server IP or hostname (e.g. 203.0.113.10)
+#   VPS_USER      — SSH user (e.g. deploy or root)
+#   VPS_SSH_KEY   — the PRIVATE SSH key whose public half is in the VPS
+#                   user's ~/.ssh/authorized_keys
+#   VPS_APP_PATH  — absolute path to the backend repo on the VPS
+#                   (e.g. /var/www/tablenowbackend)
+#   VPS_PORT      — optional SSH port (defaults to 22)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || '22' }}
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            cd "${{ secrets.VPS_APP_PATH }}"
+            bash deploy.sh
+
+  smoke-test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the API to come back up
+        run: sleep 10
+      - name: Verify /register route is live (not 404)
+        run: |
+          set -uo pipefail
+          # A bare POST with no body should be 400 (validation), NOT 404.
+          # 404 means the new route never deployed.
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 \
+            -X POST https://api.tablenow.io/api/auth/register \
+            -H "Content-Type: application/json" -d '{}')
+          echo "POST /api/auth/register -> $code"
+          if [ "$code" = "404" ]; then
+            echo "::error::/api/auth/register returned 404 — deploy did not take effect"
+            exit 1
+          fi
+          echo "OK — route is live (status $code)"
